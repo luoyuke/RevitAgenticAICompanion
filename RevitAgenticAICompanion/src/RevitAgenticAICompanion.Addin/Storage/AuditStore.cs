@@ -31,21 +31,21 @@ namespace RevitAgenticAICompanion.Storage
                     command.CommandText =
 @"INSERT INTO audit_runs (
     run_id, created_utc, updated_utc, proposal_kind, planner_name, repair_count,
-    user_prompt, reply_text, action_summary, capability_band, risk_level, scope_summary, source_hash, artifact_directory,
+    user_prompt, reply_text, action_summary, capability_band, risk_level, scope_summary, confidence_level, evidence_summary, source_hash, artifact_directory,
     document_title, document_path, active_view_name, document_fingerprint,
     selected_element_ids_json, selected_category_names_json, available_category_count,
     validation_is_valid, compilation_is_success, undo_hostile, is_approved,
     preview_is_success, preview_summary, preview_target_element_ids_json, preview_error,
-    transaction_names_json, diagnostics_json)
+    transaction_names_json, assumptions_json, probe_count, probe_evidence_json, project_conventions_json, discovered_conventions_json, diagnostics_json)
 VALUES (
     $run_id, COALESCE((SELECT created_utc FROM audit_runs WHERE run_id = $run_id), $now), $now,
     $proposal_kind, $planner_name, $repair_count,
-    $user_prompt, $reply_text, $action_summary, $capability_band, $risk_level, $scope_summary, $source_hash, $artifact_directory,
+    $user_prompt, $reply_text, $action_summary, $capability_band, $risk_level, $scope_summary, $confidence_level, $evidence_summary, $source_hash, $artifact_directory,
     $document_title, $document_path, $active_view_name, $document_fingerprint,
     $selected_element_ids_json, $selected_category_names_json, $available_category_count,
     $validation_is_valid, $compilation_is_success, $undo_hostile, $is_approved,
     $preview_is_success, $preview_summary, $preview_target_element_ids_json, $preview_error,
-    $transaction_names_json, $diagnostics_json)
+    $transaction_names_json, $assumptions_json, $probe_count, $probe_evidence_json, $project_conventions_json, $discovered_conventions_json, $diagnostics_json)
 ON CONFLICT(run_id) DO UPDATE SET
     updated_utc = excluded.updated_utc,
     proposal_kind = excluded.proposal_kind,
@@ -57,6 +57,8 @@ ON CONFLICT(run_id) DO UPDATE SET
     capability_band = excluded.capability_band,
     risk_level = excluded.risk_level,
     scope_summary = excluded.scope_summary,
+    confidence_level = excluded.confidence_level,
+    evidence_summary = excluded.evidence_summary,
     source_hash = excluded.source_hash,
     artifact_directory = excluded.artifact_directory,
     document_title = excluded.document_title,
@@ -75,6 +77,11 @@ ON CONFLICT(run_id) DO UPDATE SET
     preview_target_element_ids_json = excluded.preview_target_element_ids_json,
     preview_error = excluded.preview_error,
     transaction_names_json = excluded.transaction_names_json,
+    assumptions_json = excluded.assumptions_json,
+    probe_count = excluded.probe_count,
+    probe_evidence_json = excluded.probe_evidence_json,
+    project_conventions_json = excluded.project_conventions_json,
+    discovered_conventions_json = excluded.discovered_conventions_json,
     diagnostics_json = excluded.diagnostics_json;";
 
                     BindPlanningParameters(command, session);
@@ -139,6 +146,8 @@ WHERE run_id = $run_id;";
     capability_band TEXT NOT NULL DEFAULT '',
     risk_level TEXT NOT NULL DEFAULT '',
     scope_summary TEXT NOT NULL DEFAULT '',
+    confidence_level TEXT NOT NULL DEFAULT '',
+    evidence_summary TEXT NOT NULL DEFAULT '',
     source_hash TEXT NOT NULL,
     artifact_directory TEXT NOT NULL,
     document_title TEXT NOT NULL,
@@ -159,6 +168,11 @@ WHERE run_id = $run_id;";
     execution_is_success INTEGER NULL,
     execution_transaction_name TEXT NULL,
     transaction_names_json TEXT NOT NULL,
+    assumptions_json TEXT NOT NULL DEFAULT '[]',
+    probe_count INTEGER NOT NULL DEFAULT 0,
+    probe_evidence_json TEXT NOT NULL DEFAULT '[]',
+    project_conventions_json TEXT NOT NULL DEFAULT '[]',
+    discovered_conventions_json TEXT NOT NULL DEFAULT '[]',
     changed_element_ids_json TEXT NULL,
     execution_summary TEXT NULL,
     execution_error TEXT NULL,
@@ -174,11 +188,18 @@ WHERE run_id = $run_id;";
                 EnsureColumn(connection, "audit_runs", "capability_band", "TEXT NOT NULL DEFAULT ''");
                 EnsureColumn(connection, "audit_runs", "risk_level", "TEXT NOT NULL DEFAULT ''");
                 EnsureColumn(connection, "audit_runs", "scope_summary", "TEXT NOT NULL DEFAULT ''");
+                EnsureColumn(connection, "audit_runs", "confidence_level", "TEXT NOT NULL DEFAULT ''");
+                EnsureColumn(connection, "audit_runs", "evidence_summary", "TEXT NOT NULL DEFAULT ''");
                 EnsureColumn(connection, "audit_runs", "preview_is_success", "INTEGER NULL");
                 EnsureColumn(connection, "audit_runs", "preview_summary", "TEXT NULL");
                 EnsureColumn(connection, "audit_runs", "preview_target_element_ids_json", "TEXT NULL");
                 EnsureColumn(connection, "audit_runs", "preview_error", "TEXT NULL");
                 EnsureColumn(connection, "audit_runs", "execution_transaction_name", "TEXT NULL");
+                EnsureColumn(connection, "audit_runs", "assumptions_json", "TEXT NOT NULL DEFAULT '[]'");
+                EnsureColumn(connection, "audit_runs", "probe_count", "INTEGER NOT NULL DEFAULT 0");
+                EnsureColumn(connection, "audit_runs", "probe_evidence_json", "TEXT NOT NULL DEFAULT '[]'");
+                EnsureColumn(connection, "audit_runs", "project_conventions_json", "TEXT NOT NULL DEFAULT '[]'");
+                EnsureColumn(connection, "audit_runs", "discovered_conventions_json", "TEXT NOT NULL DEFAULT '[]'");
             }
         }
 
@@ -197,6 +218,8 @@ WHERE run_id = $run_id;";
             command.Parameters.AddWithValue("$capability_band", proposal.CapabilityBand ?? string.Empty);
             command.Parameters.AddWithValue("$risk_level", proposal.RiskLevel ?? string.Empty);
             command.Parameters.AddWithValue("$scope_summary", proposal.ScopeSummary ?? string.Empty);
+            command.Parameters.AddWithValue("$confidence_level", proposal.ConfidenceLevel ?? string.Empty);
+            command.Parameters.AddWithValue("$evidence_summary", proposal.EvidenceSummary ?? string.Empty);
             command.Parameters.AddWithValue("$source_hash", proposal.SourceHash ?? string.Empty);
             command.Parameters.AddWithValue("$artifact_directory", proposal.ArtifactDirectory ?? string.Empty);
             command.Parameters.AddWithValue("$document_title", session.ContextSnapshot?.DocumentTitle ?? string.Empty);
@@ -215,6 +238,11 @@ WHERE run_id = $run_id;";
             command.Parameters.AddWithValue("$preview_target_element_ids_json", JsonSerializer.Serialize(session.PreviewResult?.TargetElementIds ?? Array.Empty<long>()));
             command.Parameters.AddWithValue("$preview_error", session.PreviewResult?.Error ?? string.Empty);
             command.Parameters.AddWithValue("$transaction_names_json", JsonSerializer.Serialize(proposal.TransactionNames ?? Array.Empty<string>()));
+            command.Parameters.AddWithValue("$assumptions_json", JsonSerializer.Serialize(proposal.Assumptions ?? Array.Empty<string>()));
+            command.Parameters.AddWithValue("$probe_count", session.RetrievedEvidence?.Count ?? 0);
+            command.Parameters.AddWithValue("$probe_evidence_json", JsonSerializer.Serialize(session.RetrievedEvidence ?? Array.Empty<ProbeEvidence>()));
+            command.Parameters.AddWithValue("$project_conventions_json", JsonSerializer.Serialize(session.ProjectConventions ?? Array.Empty<ProjectConventionRecord>()));
+            command.Parameters.AddWithValue("$discovered_conventions_json", JsonSerializer.Serialize(proposal.DiscoveredConventions ?? Array.Empty<ProjectConventionRecord>()));
             command.Parameters.AddWithValue("$diagnostics_json", JsonSerializer.Serialize(session.CompilationResult?.Diagnostics ?? Array.Empty<string>()));
         }
 

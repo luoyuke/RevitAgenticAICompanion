@@ -50,6 +50,24 @@ namespace RevitAgenticAICompanion.Runtime
                 report.Errors.Add("A risk level is required.");
             }
 
+            if (string.IsNullOrWhiteSpace(proposal.ConfidenceLevel))
+            {
+                report.Errors.Add("A confidence level is required.");
+            }
+
+            if (proposal.ContinuesPlanning)
+            {
+                if (string.IsNullOrWhiteSpace(proposal.ProbePurpose))
+                {
+                    report.Errors.Add("Inspection probes must declare a probe purpose.");
+                }
+
+                if (string.IsNullOrWhiteSpace(proposal.ProbeQuestion))
+                {
+                    report.Errors.Add("Inspection probes must declare a probe question.");
+                }
+            }
+
             if (proposal.RequiresApproval && (proposal.TransactionNames == null || proposal.TransactionNames.Count == 0))
             {
                 report.Errors.Add("At least one human-readable transaction name is required.");

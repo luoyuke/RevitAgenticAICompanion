@@ -159,6 +159,7 @@ namespace RevitAgenticAICompanion.UI
 
                 AppendLog("Response ready. Planner: " + session.Proposal.Provenance.Summary);
                 AppendLog("Response kind: " + session.Proposal.ResponseKind);
+                AppendLog("Confidence: " + session.Proposal.ConfidenceLevel);
                 if (session.Proposal.RequiresCompilation)
                 {
                     AppendLog("Proposal created. Source hash: " + session.Proposal.SourceHash);
@@ -170,6 +171,11 @@ namespace RevitAgenticAICompanion.UI
                     AppendLog(session.PreviewResult.IsSuccess
                         ? "Preview ready. Targets: " + string.Join(", ", session.PreviewResult.TargetElementIds)
                         : "Preview failed: " + session.PreviewResult.Error);
+                }
+
+                if (session.RetrievedEvidence.Count > 0)
+                {
+                    AppendLog("Retrieved evidence count: " + session.RetrievedEvidence.Count);
                 }
 
                 if (session.ExecutionResult != null && session.Proposal.ExecutesReadOnly)
@@ -392,6 +398,7 @@ namespace RevitAgenticAICompanion.UI
                     "Capability band: " + session.Proposal.CapabilityBand + Environment.NewLine +
                     "Risk level: " + session.Proposal.RiskLevel + Environment.NewLine +
                     "Scope: " + session.Proposal.ScopeSummary + Environment.NewLine +
+                    "Confidence: " + session.Proposal.ConfidenceLevel + Environment.NewLine +
                     "Planner: " + session.Proposal.Provenance.Summary + Environment.NewLine +
                     "Document fingerprint: " + session.ContextSnapshot.Fingerprint;
             }
@@ -403,6 +410,8 @@ namespace RevitAgenticAICompanion.UI
                 "Capability band: " + session.Proposal.CapabilityBand + Environment.NewLine +
                 "Risk level: " + session.Proposal.RiskLevel + Environment.NewLine +
                 "Scope: " + session.Proposal.ScopeSummary + Environment.NewLine +
+                "Confidence: " + session.Proposal.ConfidenceLevel + Environment.NewLine +
+                "Evidence summary: " + session.Proposal.EvidenceSummary + Environment.NewLine +
                 "Planner: " + session.Proposal.Provenance.Summary + Environment.NewLine +
                 "Validation valid: " + validation.IsValid + Environment.NewLine +
                 "Compilation success: " + session.CompilationResult.IsSuccess + Environment.NewLine +
@@ -412,6 +421,53 @@ namespace RevitAgenticAICompanion.UI
                 "Selected element ids: " + string.Join(", ", session.ContextSnapshot.SelectedElementIds) + Environment.NewLine +
                 "Selected categories: " + string.Join(", ", session.ContextSnapshot.SelectedCategoryNames) + Environment.NewLine +
                 "Available categories sampled: " + session.ContextSnapshot.AvailableModelCategories.Count;
+
+            if (session.Proposal.Assumptions.Count > 0)
+            {
+                summary += Environment.NewLine + Environment.NewLine +
+                    "Assumptions:" + Environment.NewLine +
+                    string.Join(Environment.NewLine, session.Proposal.Assumptions);
+            }
+
+            if (session.RetrievedEvidence.Count > 0)
+            {
+                summary += Environment.NewLine + Environment.NewLine + "Retrieved Evidence:";
+                foreach (var evidence in session.RetrievedEvidence)
+                {
+                    summary += Environment.NewLine +
+                        "Probe " + evidence.ProbeOrdinal + ": " + evidence.Purpose + Environment.NewLine +
+                        "Question: " + evidence.Question + Environment.NewLine +
+                        "Summary: " + evidence.Summary + Environment.NewLine +
+                        "Element ids: " + string.Join(", ", evidence.ElementIds);
+                }
+            }
+
+            if (session.ProjectConventions.Count > 0)
+            {
+                summary += Environment.NewLine + Environment.NewLine + "Project Memory:";
+                foreach (var convention in session.ProjectConventions)
+                {
+                    summary += Environment.NewLine +
+                        "[" + convention.ConfidenceLevel + "] " + convention.ConventionType + ": " + convention.Name + " = " + convention.Value;
+                }
+            }
+
+            if (session.Proposal.DiscoveredConventions.Count > 0)
+            {
+                summary += Environment.NewLine + Environment.NewLine + "Discovered Conventions:";
+                foreach (var convention in session.Proposal.DiscoveredConventions)
+                {
+                    summary += Environment.NewLine +
+                        "[" + convention.ConfidenceLevel + "] " + convention.ConventionType + ": " + convention.Name + " = " + convention.Value;
+                }
+            }
+
+            if (session.Proposal.ContinuesPlanning)
+            {
+                summary += Environment.NewLine + Environment.NewLine +
+                    "Probe Purpose: " + session.Proposal.ProbePurpose + Environment.NewLine +
+                    "Probe Question: " + session.Proposal.ProbeQuestion;
+            }
 
             if (session.PreviewResult != null)
             {
