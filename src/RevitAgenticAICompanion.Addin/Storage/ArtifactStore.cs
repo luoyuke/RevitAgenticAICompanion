@@ -18,6 +18,7 @@ namespace RevitAgenticAICompanion.Storage
 
         public string WriteProposal(
             RevitContextSnapshot snapshot,
+            PlanningRequest planningRequest,
             ProposalCandidate proposal,
             ValidationReport validation,
             GeneratedActionCompilationResult compilation)
@@ -27,7 +28,7 @@ namespace RevitAgenticAICompanion.Storage
             Directory.CreateDirectory(directory);
 
             File.WriteAllText(Path.Combine(directory, "generated-action.cs"), proposal.GeneratedSource ?? string.Empty, Utf8NoBom);
-            File.WriteAllText(Path.Combine(directory, "summary.txt"), BuildSummary(snapshot, proposal, validation, compilation), Utf8NoBom);
+            File.WriteAllText(Path.Combine(directory, "summary.txt"), BuildSummary(snapshot, planningRequest, proposal, validation, compilation), Utf8NoBom);
             File.WriteAllText(Path.Combine(directory, "compile.txt"), BuildCompilationSummary(compilation), Utf8NoBom);
             if (compilation.AssemblyBytes != null && compilation.AssemblyBytes.Length > 0)
             {
@@ -65,6 +66,7 @@ namespace RevitAgenticAICompanion.Storage
 
         private static string BuildSummary(
             RevitContextSnapshot snapshot,
+            PlanningRequest planningRequest,
             ProposalCandidate proposal,
             ValidationReport validation,
             GeneratedActionCompilationResult compilation)
@@ -94,13 +96,63 @@ namespace RevitAgenticAICompanion.Storage
             builder.AppendLine("Scope Summary:");
             builder.AppendLine(proposal.ScopeSummary ?? string.Empty);
             builder.AppendLine();
+            builder.AppendLine("Confidence Level:");
+            builder.AppendLine(proposal.ConfidenceLevel ?? string.Empty);
+            builder.AppendLine();
+            builder.AppendLine("Evidence Summary:");
+            builder.AppendLine(proposal.EvidenceSummary ?? string.Empty);
+            builder.AppendLine();
             builder.AppendLine("Planner:");
             builder.AppendLine(proposal.Provenance?.Summary ?? "Unknown");
             builder.AppendLine();
+            if (proposal.Assumptions.Count > 0)
+            {
+                builder.AppendLine("Assumptions:");
+                foreach (var assumption in proposal.Assumptions)
+                {
+                    builder.AppendLine("- " + assumption);
+                }
+
+                builder.AppendLine();
+            }
+
+            if (proposal.ContinuesPlanning)
+            {
+                builder.AppendLine("Probe Purpose:");
+                builder.AppendLine(proposal.ProbePurpose ?? string.Empty);
+                builder.AppendLine("Probe Question:");
+                builder.AppendLine(proposal.ProbeQuestion ?? string.Empty);
+                builder.AppendLine();
+            }
+
             builder.AppendLine("Selected Categories:");
             builder.AppendLine(string.Join(", ", snapshot.SelectedCategoryNames ?? Enumerable.Empty<string>()));
             builder.AppendLine("Selected Element Ids:");
             builder.AppendLine(string.Join(", ", snapshot.SelectedElementIds ?? Enumerable.Empty<int>()));
+            builder.AppendLine();
+            builder.AppendLine("Retrieved Evidence:");
+            foreach (var evidence in planningRequest?.RetrievedEvidence ?? Array.Empty<ProbeEvidence>())
+            {
+                builder.AppendLine("- Probe " + evidence.ProbeOrdinal + ": " + evidence.Purpose);
+                builder.AppendLine("  Question: " + evidence.Question);
+                builder.AppendLine("  Summary: " + evidence.Summary);
+                builder.AppendLine("  Element ids: " + string.Join(", ", evidence.ElementIds ?? Enumerable.Empty<long>()));
+            }
+
+            builder.AppendLine();
+            builder.AppendLine("Project Memory:");
+            foreach (var convention in planningRequest?.ProjectConventions ?? Array.Empty<ProjectConventionRecord>())
+            {
+                builder.AppendLine("- [" + convention.ConfidenceLevel + "] " + convention.ConventionType + ": " + convention.Name + " = " + convention.Value + " (" + convention.Rationale + ")");
+            }
+
+            builder.AppendLine();
+            builder.AppendLine("Discovered Conventions:");
+            foreach (var convention in proposal.DiscoveredConventions ?? Array.Empty<ProjectConventionRecord>())
+            {
+                builder.AppendLine("- [" + convention.ConfidenceLevel + "] " + convention.ConventionType + ": " + convention.Name + " = " + convention.Value + " (" + convention.Rationale + ")");
+            }
+
             builder.AppendLine();
             if (proposal.ResponseKind == ProposalResponseKind.ReplyOnly)
             {

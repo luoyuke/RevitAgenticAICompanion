@@ -19,7 +19,7 @@ namespace RevitAgenticAICompanion.Runtime
         private const string ClientVersion = "0.1.0";
         private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(20);
         private static readonly TimeSpan StatusTimeout = TimeSpan.FromSeconds(15);
-        private static readonly TimeSpan ExecTimeout = TimeSpan.FromMinutes(2);
+        private static readonly TimeSpan ExecTimeout = TimeSpan.FromMinutes(8);
         private readonly LocalStoragePaths _paths;
         private readonly ProjectThreadStore _threadStore;
         private readonly string _schemaPath;
@@ -173,7 +173,7 @@ namespace RevitAgenticAICompanion.Runtime
             bool useOutputSchema,
             CancellationToken cancellationToken)
         {
-            var projectKey = BuildProjectKey(snapshot);
+            var projectKey = ProjectKeyBuilder.FromSnapshot(snapshot);
             var storedThreadId = _threadStore.GetThreadId(projectKey);
 
             try
@@ -903,7 +903,7 @@ namespace RevitAgenticAICompanion.Runtime
                 return path.Trim().ToLowerInvariant();
             }
 
-            return snapshot?.DocumentTitle ?? "no-document";
+            return ProjectKeyBuilder.FromSnapshot(snapshot);
         }
 
         private static string BuildPlanningPrompt(PlanningRequest request)
@@ -913,9 +913,10 @@ namespace RevitAgenticAICompanion.Runtime
             builder.AppendLine("You are the planning runtime for a Revit add-in with modeless chat.");
             builder.AppendLine("Return JSON only and obey the provided output schema.");
             builder.AppendLine("Accept any user prompt. Do not reject prompts just because they are not Revit write tasks.");
-            builder.AppendLine("Choose one of three response kinds:");
+            builder.AppendLine("Choose one of four response kinds:");
             builder.AppendLine("- reply_only: for greetings, general questions, clarification, read-only guidance, or anything that should not execute code.");
-            builder.AppendLine("- read_only_query: when the user needs live model inspection or analysis without changing the Revit document.");
+            builder.AppendLine("- inspection_probe: when you need live project evidence before you can safely answer or propose a write.");
+            builder.AppendLine("- read_only_query: when the user needs one read-only model inspection or answer without continuing to a write proposal.");
             builder.AppendLine("- action_proposal: only when you are confident the user wants a Revit model change and the request fits the current demo capability.");
             builder.AppendLine("Current executable demo capabilities:");
             builder.AppendLine("- create or replace a single schedule/BOQ ViewSchedule in Revit");
@@ -924,17 +925,26 @@ namespace RevitAgenticAICompanion.Runtime
             builder.AppendLine("- clash coordination in a bounded scope such as the current selection, active view, or an explicitly named confined area");
             builder.AppendLine("- higher-risk creation workflows such as localized family/device placement, bounded wall/system creation, and limited MEP adjustments");
             builder.AppendLine("This host compiles and executes C# in-process, but the host owns the transaction lifecycle.");
+            builder.AppendLine("Planning model:");
+            builder.AppendLine("- Ambient context is advisory.");
+            builder.AppendLine("- Retrieved evidence from executed inspection probes is authoritative for this turn.");
+            builder.AppendLine("- Project memory stores discovered conventions from prior turns. Use it as advisory memory, not as proof.");
             builder.AppendLine("Rules:");
             builder.AppendLine("- Always populate every schema field.");
-            builder.AppendLine("- Always set capabilityBand, riskLevel, and scopeSummary.");
-            builder.AppendLine("- For reply_only, set messageText to the user-facing reply, actionSummary = \"\", transactionName = \"\", generatedSource = \"\", isUndoHostile = false, capabilityBand = \"reply\", riskLevel = \"low\", and scopeSummary = \"\".");
-            builder.AppendLine("- For read_only_query, set messageText to a short explanation of what will be inspected, set transactionName = \"\", isUndoHostile = false, set capabilityBand = \"read_query\", set riskLevel = \"low\", set a useful scopeSummary, and generate source for GeneratedActions.CompanionAction.Execute(UIApplication uiapp).");
+            builder.AppendLine("- Always set capabilityBand, riskLevel, scopeSummary, confidenceLevel, evidenceSummary, probePurpose, probeQuestion, assumptions, and discoveredConventions.");
+            builder.AppendLine("- For reply_only, set messageText to the user-facing reply, actionSummary = \"\", transactionName = \"\", generatedSource = \"\", isUndoHostile = false, capabilityBand = \"reply\", riskLevel = \"low\", scopeSummary = \"\", confidenceLevel = \"low\", evidenceSummary = \"\", probePurpose = \"\", probeQuestion = \"\", assumptions = [], discoveredConventions = [].");
+            builder.AppendLine("- For inspection_probe, set messageText to a short explanation of what will be inspected and why. Set transactionName = \"\", isUndoHostile = false, capabilityBand = \"read_query\", riskLevel = \"low\", and generate source for GeneratedActions.CompanionAction.Execute(UIApplication uiapp).");
+            builder.AppendLine("- For inspection_probe, probePurpose and probeQuestion are required and must be concrete.");
+            builder.AppendLine("- For read_only_query, use generated read-only source only when live model inspection is required for the final answer. Set transactionName = \"\", isUndoHostile = false, capabilityBand = \"read_query\", and a useful scopeSummary.");
             builder.AppendLine("- For action_proposal, messageText should briefly explain the planned action before approval.");
             builder.AppendLine("- For action_proposal, set actionSummary, transactionName, generatedSource, isUndoHostile, capabilityBand, riskLevel, and scopeSummary explicitly.");
             builder.AppendLine("- For action_proposal, generate two static entry points: GeneratedActions.CompanionAction.Preview(UIApplication uiapp) and GeneratedActions.CompanionAction.Execute(UIApplication uiapp).");
             builder.AppendLine("- Do not create Transaction or TransactionGroup objects.");
             builder.AppendLine("- The code may use the raw Revit API.");
             builder.AppendLine("- Keep write scope bounded and safe.");
+            builder.AppendLine("- Inspection-first is required when the task depends on project-specific naming, parameter values, system names, family/type matching, linked-model coordination, level-based logic, clash coordination, or semantic labels such as domestic, supply, return, fire, architectural, or writable parameter targets.");
+            builder.AppendLine("- You may request at most " + request.MaxProbeCount + " inspection_probe steps for this user turn. If you still lack evidence after that, return reply_only or action_proposal with explicit assumptions and low confidence.");
+            builder.AppendLine("- Do not loop forever. If existing evidence already answers the question, do not ask for another probe.");
             builder.AppendLine("- For schedule actions, keep scope limited to creating or replacing a single ViewSchedule.");
             builder.AppendLine("- For parameter edits, prefer the current selection first. Otherwise keep the target set to one clearly named category and one parameter.");
             builder.AppendLine("- For parameter edits, Preview must only inspect and report the affected elements and values. Execute performs the write.");
@@ -944,21 +954,61 @@ namespace RevitAgenticAICompanion.Runtime
             builder.AppendLine("- Return human-readable transaction names.");
             builder.AppendLine("- The generated Execute method must return GeneratedActionResult with changed element ids as IReadOnlyList<long>.");
             builder.AppendLine("- The generated Preview method must return GeneratedActionResult with target element ids as IReadOnlyList<long>.");
+            builder.AppendLine("- For inspection_probe and read_only_query, the returned summary must report concrete discovered names, parameter names, values, element ids, or field names. Do not speculate.");
             builder.AppendLine("- Use elementId.Value, not IntegerValue.");
             builder.AppendLine("- Do not use SchedulableField.GetFieldType().");
             builder.AppendLine("- Do not use ElementId.IntegerValue.");
             builder.AppendLine("- Prefer straightforward, compile-safe Revit API usage over complex heuristics.");
+            builder.AppendLine("- Confidence levels are low, medium, or high.");
+            builder.AppendLine("- Assumptions must list any unverified mapping or convention guess that affects the answer or write plan.");
+            builder.AppendLine("- discoveredConventions should include conventions that are grounded by retrieved evidence or clearly stated user instruction.");
             builder.AppendLine("- If you can answer conversationally without model mutation, prefer reply_only.");
             builder.AppendLine();
             builder.AppendLine("Prompt:");
             builder.AppendLine(request.Prompt ?? string.Empty);
             builder.AppendLine();
-            builder.AppendLine("Context:");
+            builder.AppendLine("Ambient context:");
             builder.AppendLine("DocumentTitle: " + snapshot.DocumentTitle);
             builder.AppendLine("DocumentPath: " + snapshot.DocumentPath);
             builder.AppendLine("ActiveView: " + snapshot.ActiveViewName);
+            builder.AppendLine("SelectedElementIds: " + string.Join(", ", snapshot.SelectedElementIds));
             builder.AppendLine("SelectedCategories: " + string.Join(", ", snapshot.SelectedCategoryNames));
             builder.AppendLine("AvailableCategories: " + string.Join(", ", snapshot.AvailableModelCategories.Take(150)));
+            builder.AppendLine();
+            builder.AppendLine("Project memory (advisory):");
+            if (request.ProjectConventions == null || request.ProjectConventions.Count == 0)
+            {
+                builder.AppendLine("- none");
+            }
+            else
+            {
+                foreach (var convention in request.ProjectConventions.Take(20))
+                {
+                    builder.AppendLine("- [" + convention.ConfidenceLevel + "] " + convention.ConventionType + ": " + convention.Name + " = " + convention.Value + " (" + convention.Rationale + ")");
+                }
+            }
+
+            builder.AppendLine();
+            builder.AppendLine("Retrieved evidence for this turn (authoritative):");
+            if (request.RetrievedEvidence == null || request.RetrievedEvidence.Count == 0)
+            {
+                builder.AppendLine("- none yet");
+            }
+            else
+            {
+                foreach (var evidence in request.RetrievedEvidence)
+                {
+                    builder.AppendLine("- Probe " + evidence.ProbeOrdinal + ": " + evidence.Purpose);
+                    builder.AppendLine("  Question: " + evidence.Question);
+                    builder.AppendLine("  Summary: " + evidence.Summary);
+                    builder.AppendLine("  ElementIds: " + string.Join(", ", evidence.ElementIds ?? Array.Empty<long>()));
+                }
+            }
+
+            builder.AppendLine();
+            builder.AppendLine("Probe budget:");
+            builder.AppendLine("Completed probes: " + request.CompletedProbeCount);
+            builder.AppendLine("Maximum probes: " + request.MaxProbeCount);
             builder.AppendLine();
             builder.AppendLine("The generated source must include:");
             builder.AppendLine("using System;");
@@ -989,7 +1039,7 @@ namespace RevitAgenticAICompanion.Runtime
             builder.AppendLine("Requirements:");
             builder.AppendLine("- Keep the same responseKind unless compiler diagnostics prove the previous kind was wrong.");
             builder.AppendLine("- Return a concise messageText that explains the repaired plan.");
-            builder.AppendLine("- Populate every schema field, including actionSummary, transactionName, generatedSource, isUndoHostile, capabilityBand, riskLevel, and scopeSummary.");
+            builder.AppendLine("- Populate every schema field, including actionSummary, transactionName, generatedSource, isUndoHostile, capabilityBand, riskLevel, scopeSummary, confidenceLevel, evidenceSummary, probePurpose, probeQuestion, assumptions, and discoveredConventions.");
             builder.AppendLine("- Keep the same entry points: GeneratedActions.CompanionAction.Execute(UIApplication uiapp), and if this is an action_proposal also GeneratedActions.CompanionAction.Preview(UIApplication uiapp).");
             builder.AppendLine("- Do not create Transaction or TransactionGroup objects.");
             builder.AppendLine("- Return GeneratedActionResult with IReadOnlyList<long> changed element ids.");
@@ -1022,13 +1072,13 @@ namespace RevitAgenticAICompanion.Runtime
             {
                 ["type"] = "object",
                 ["additionalProperties"] = false,
-                ["required"] = new JsonArray("responseKind", "messageText", "actionSummary", "transactionName", "generatedSource", "isUndoHostile", "capabilityBand", "riskLevel", "scopeSummary"),
+                ["required"] = new JsonArray("responseKind", "messageText", "actionSummary", "transactionName", "generatedSource", "isUndoHostile", "capabilityBand", "riskLevel", "scopeSummary", "confidenceLevel", "evidenceSummary", "probePurpose", "probeQuestion", "assumptions", "discoveredConventions"),
                 ["properties"] = new JsonObject
                 {
                     ["responseKind"] = new JsonObject
                     {
                         ["type"] = "string",
-                        ["enum"] = new JsonArray("reply_only", "read_only_query", "action_proposal"),
+                        ["enum"] = new JsonArray("reply_only", "inspection_probe", "read_only_query", "action_proposal"),
                     },
                     ["messageText"] = new JsonObject
                     {
@@ -1064,6 +1114,53 @@ namespace RevitAgenticAICompanion.Runtime
                     {
                         ["type"] = "string",
                     },
+                    ["confidenceLevel"] = new JsonObject
+                    {
+                        ["type"] = "string",
+                        ["enum"] = new JsonArray("low", "medium", "high"),
+                    },
+                    ["evidenceSummary"] = new JsonObject
+                    {
+                        ["type"] = "string",
+                    },
+                    ["probePurpose"] = new JsonObject
+                    {
+                        ["type"] = "string",
+                    },
+                    ["probeQuestion"] = new JsonObject
+                    {
+                        ["type"] = "string",
+                    },
+                    ["assumptions"] = new JsonObject
+                    {
+                        ["type"] = "array",
+                        ["items"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                        },
+                    },
+                    ["discoveredConventions"] = new JsonObject
+                    {
+                        ["type"] = "array",
+                        ["items"] = new JsonObject
+                        {
+                            ["type"] = "object",
+                            ["additionalProperties"] = false,
+                            ["required"] = new JsonArray("conventionType", "name", "value", "confidenceLevel", "rationale"),
+                            ["properties"] = new JsonObject
+                            {
+                                ["conventionType"] = new JsonObject { ["type"] = "string" },
+                                ["name"] = new JsonObject { ["type"] = "string" },
+                                ["value"] = new JsonObject { ["type"] = "string" },
+                                ["confidenceLevel"] = new JsonObject
+                                {
+                                    ["type"] = "string",
+                                    ["enum"] = new JsonArray("low", "medium", "high"),
+                                },
+                                ["rationale"] = new JsonObject { ["type"] = "string" },
+                            },
+                        },
+                    },
                 },
             };
         }
@@ -1078,12 +1175,35 @@ namespace RevitAgenticAICompanion.Runtime
                     payload?.CapabilityBand ?? "reply",
                     payload?.RiskLevel ?? "low",
                     payload?.ScopeSummary ?? string.Empty,
+                    payload?.ConfidenceLevel ?? "low",
+                    payload?.Assumptions ?? Array.Empty<string>(),
+                    ToConventionRecords(payload?.DiscoveredConventions),
                     new ProposalProvenance("Codex", repairCount));
             }
 
             if (string.IsNullOrWhiteSpace(payload?.GeneratedSource))
             {
                 throw new InvalidOperationException("Codex returned generated-code response without source.");
+            }
+
+            if (IsInspectionProbe(payload))
+            {
+                return ProposalCandidate.CreateInspectionProbe(
+                    userPrompt,
+                    FirstNonEmpty(payload.ActionSummary, payload.MessageText),
+                    payload.GeneratedSource,
+                    "GeneratedActions.CompanionAction",
+                    "Execute",
+                    payload.CapabilityBand,
+                    payload.RiskLevel,
+                    payload.ScopeSummary,
+                    payload.ConfidenceLevel,
+                    payload.EvidenceSummary,
+                    payload.ProbePurpose,
+                    payload.ProbeQuestion,
+                    payload.Assumptions ?? Array.Empty<string>(),
+                    ToConventionRecords(payload.DiscoveredConventions),
+                    new ProposalProvenance("Codex", repairCount));
             }
 
             if (IsReadOnlyQuery(payload))
@@ -1097,6 +1217,10 @@ namespace RevitAgenticAICompanion.Runtime
                     payload.CapabilityBand,
                     payload.RiskLevel,
                     payload.ScopeSummary,
+                    payload.ConfidenceLevel,
+                    payload.EvidenceSummary,
+                    payload.Assumptions ?? Array.Empty<string>(),
+                    ToConventionRecords(payload.DiscoveredConventions),
                     new ProposalProvenance("Codex", repairCount));
             }
 
@@ -1112,6 +1236,10 @@ namespace RevitAgenticAICompanion.Runtime
                 payload.CapabilityBand,
                 payload.RiskLevel,
                 payload.ScopeSummary,
+                payload.ConfidenceLevel,
+                payload.EvidenceSummary,
+                payload.Assumptions ?? Array.Empty<string>(),
+                ToConventionRecords(payload.DiscoveredConventions),
                 new ProposalProvenance("Codex", repairCount));
         }
 
@@ -1119,6 +1247,12 @@ namespace RevitAgenticAICompanion.Runtime
         {
             return payload == null ||
                 string.Equals(payload.ResponseKind, "reply_only", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsInspectionProbe(CodexPlanningPayload payload)
+        {
+            return payload != null &&
+                string.Equals(payload.ResponseKind, "inspection_probe", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsReadOnlyQuery(CodexPlanningPayload payload)
@@ -1135,7 +1269,26 @@ namespace RevitAgenticAICompanion.Runtime
 
         private static bool RequiresGeneratedCode(CodexPlanningPayload payload)
         {
-            return IsReadOnlyQuery(payload) || IsActionProposal(payload);
+            return IsInspectionProbe(payload) || IsReadOnlyQuery(payload) || IsActionProposal(payload);
+        }
+
+        private static ProjectConventionRecord[] ToConventionRecords(IReadOnlyList<CodexConventionPayload> payloads)
+        {
+            if (payloads == null || payloads.Count == 0)
+            {
+                return Array.Empty<ProjectConventionRecord>();
+            }
+
+            return payloads
+                .Where(payload => payload != null)
+                .Select(payload => new ProjectConventionRecord(
+                    payload.ConventionType,
+                    payload.Name,
+                    payload.Value,
+                    payload.ConfidenceLevel,
+                    payload.Rationale,
+                    "Codex"))
+                .ToArray();
         }
 
         private static JsonNode GetProperty(JsonNode node, string propertyName)
@@ -1266,6 +1419,21 @@ namespace RevitAgenticAICompanion.Runtime
             public string CapabilityBand { get; set; }
             public string RiskLevel { get; set; }
             public string ScopeSummary { get; set; }
+            public string ConfidenceLevel { get; set; }
+            public string EvidenceSummary { get; set; }
+            public string ProbePurpose { get; set; }
+            public string ProbeQuestion { get; set; }
+            public string[] Assumptions { get; set; }
+            public CodexConventionPayload[] DiscoveredConventions { get; set; }
+        }
+
+        private sealed class CodexConventionPayload
+        {
+            public string ConventionType { get; set; }
+            public string Name { get; set; }
+            public string Value { get; set; }
+            public string ConfidenceLevel { get; set; }
+            public string Rationale { get; set; }
         }
 
         private sealed class CodexCliResult

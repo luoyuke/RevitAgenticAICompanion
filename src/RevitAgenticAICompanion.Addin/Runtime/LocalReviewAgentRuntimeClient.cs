@@ -40,6 +40,9 @@ namespace RevitAgenticAICompanion.Runtime
                         "reply",
                         "low",
                         string.Empty,
+                        "low",
+                        Array.Empty<string>(),
+                        Array.Empty<ProjectConventionRecord>(),
                         new ProposalProvenance("Local review", 0)));
             }
 
@@ -68,6 +71,10 @@ namespace RevitAgenticAICompanion.Runtime
                 "schedule_workflow",
                 "medium",
                 "Current document; category: " + categoryName,
+                "medium",
+                string.Empty,
+                Array.Empty<string>(),
+                Array.Empty<ProjectConventionRecord>(),
                 new ProposalProvenance("Local review", 0));
 
             return Task.FromResult(proposal);

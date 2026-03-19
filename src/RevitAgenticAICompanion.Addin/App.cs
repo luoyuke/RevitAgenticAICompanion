@@ -30,6 +30,7 @@ namespace RevitAgenticAICompanion
 
             var artifactStore = new ArtifactStore(storagePaths);
             var auditStore = new AuditStore(storagePaths);
+            var projectMemoryStore = new ProjectMemoryStore(storagePaths);
             var threadStore = new ProjectThreadStore(storagePaths);
             var codexClient = new CodexAgentRuntimeClient(storagePaths, threadStore);
             _runtimeDisposable = codexClient;
@@ -37,7 +38,7 @@ namespace RevitAgenticAICompanion
             var validator = new GeneratedCodeValidator();
             var compiler = new GeneratedActionCompiler();
             var executor = new GeneratedActionExecutor();
-            var coordinator = new RuntimeCoordinator(dispatcher, _documentStateTracker, runtimeClient, validator, compiler, executor, artifactStore, auditStore);
+            var coordinator = new RuntimeCoordinator(dispatcher, _documentStateTracker, runtimeClient, validator, compiler, executor, artifactStore, auditStore, projectMemoryStore);
             var chatPane = new ChatDockablePane(coordinator);
 
             HostEnvironment.Initialize(dispatcher, externalEvent, _documentStateTracker, coordinator, chatPane);

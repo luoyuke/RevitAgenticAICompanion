@@ -19,6 +19,12 @@ namespace RevitAgenticAICompanion.Runtime
             string capabilityBand,
             string riskLevel,
             string scopeSummary,
+            string confidenceLevel,
+            string evidenceSummary,
+            string probePurpose,
+            string probeQuestion,
+            IReadOnlyList<string> assumptions,
+            IReadOnlyList<ProjectConventionRecord> discoveredConventions,
             ProposalProvenance provenance)
         {
             ProposalId = Guid.NewGuid().ToString("N");
@@ -35,6 +41,12 @@ namespace RevitAgenticAICompanion.Runtime
             CapabilityBand = capabilityBand ?? string.Empty;
             RiskLevel = riskLevel ?? string.Empty;
             ScopeSummary = scopeSummary ?? string.Empty;
+            ConfidenceLevel = confidenceLevel ?? string.Empty;
+            EvidenceSummary = evidenceSummary ?? string.Empty;
+            ProbePurpose = probePurpose ?? string.Empty;
+            ProbeQuestion = probeQuestion ?? string.Empty;
+            Assumptions = assumptions ?? new string[0];
+            DiscoveredConventions = discoveredConventions ?? new ProjectConventionRecord[0];
             Provenance = provenance ?? new ProposalProvenance("Unknown", 0);
         }
 
@@ -50,6 +62,10 @@ namespace RevitAgenticAICompanion.Runtime
             string capabilityBand,
             string riskLevel,
             string scopeSummary,
+            string confidenceLevel,
+            string evidenceSummary,
+            IReadOnlyList<string> assumptions,
+            IReadOnlyList<ProjectConventionRecord> discoveredConventions,
             ProposalProvenance provenance)
         {
             return new ProposalCandidate(
@@ -66,6 +82,52 @@ namespace RevitAgenticAICompanion.Runtime
                 capabilityBand,
                 riskLevel,
                 scopeSummary,
+                confidenceLevel,
+                evidenceSummary,
+                string.Empty,
+                string.Empty,
+                assumptions,
+                discoveredConventions,
+                provenance);
+        }
+
+        public static ProposalCandidate CreateInspectionProbe(
+            string userPrompt,
+            string actionSummary,
+            string generatedSource,
+            string entryPointTypeName,
+            string entryPointMethodName,
+            string capabilityBand,
+            string riskLevel,
+            string scopeSummary,
+            string confidenceLevel,
+            string evidenceSummary,
+            string probePurpose,
+            string probeQuestion,
+            IReadOnlyList<string> assumptions,
+            IReadOnlyList<ProjectConventionRecord> discoveredConventions,
+            ProposalProvenance provenance)
+        {
+            return new ProposalCandidate(
+                userPrompt,
+                ProposalResponseKind.InspectionProbe,
+                string.Empty,
+                actionSummary,
+                generatedSource,
+                new string[0],
+                false,
+                entryPointTypeName,
+                entryPointMethodName,
+                string.Empty,
+                capabilityBand,
+                riskLevel,
+                scopeSummary,
+                confidenceLevel,
+                evidenceSummary,
+                probePurpose,
+                probeQuestion,
+                assumptions,
+                discoveredConventions,
                 provenance);
         }
 
@@ -78,6 +140,10 @@ namespace RevitAgenticAICompanion.Runtime
             string capabilityBand,
             string riskLevel,
             string scopeSummary,
+            string confidenceLevel,
+            string evidenceSummary,
+            IReadOnlyList<string> assumptions,
+            IReadOnlyList<ProjectConventionRecord> discoveredConventions,
             ProposalProvenance provenance)
         {
             return new ProposalCandidate(
@@ -94,6 +160,12 @@ namespace RevitAgenticAICompanion.Runtime
                 capabilityBand,
                 riskLevel,
                 scopeSummary,
+                confidenceLevel,
+                evidenceSummary,
+                string.Empty,
+                string.Empty,
+                assumptions,
+                discoveredConventions,
                 provenance);
         }
 
@@ -103,6 +175,9 @@ namespace RevitAgenticAICompanion.Runtime
             string capabilityBand,
             string riskLevel,
             string scopeSummary,
+            string confidenceLevel,
+            IReadOnlyList<string> assumptions,
+            IReadOnlyList<ProjectConventionRecord> discoveredConventions,
             ProposalProvenance provenance)
         {
             return new ProposalCandidate(
@@ -119,6 +194,12 @@ namespace RevitAgenticAICompanion.Runtime
                 capabilityBand,
                 riskLevel,
                 scopeSummary,
+                confidenceLevel,
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                assumptions,
+                discoveredConventions,
                 provenance);
         }
 
@@ -136,6 +217,12 @@ namespace RevitAgenticAICompanion.Runtime
         public string CapabilityBand { get; }
         public string RiskLevel { get; }
         public string ScopeSummary { get; }
+        public string ConfidenceLevel { get; }
+        public string EvidenceSummary { get; }
+        public string ProbePurpose { get; }
+        public string ProbeQuestion { get; }
+        public IReadOnlyList<string> Assumptions { get; }
+        public IReadOnlyList<ProjectConventionRecord> DiscoveredConventions { get; }
         public ProposalProvenance Provenance { get; }
         public string SourceHash { get; set; }
         public string ArtifactDirectory { get; set; }
@@ -147,12 +234,22 @@ namespace RevitAgenticAICompanion.Runtime
 
         public bool RequiresCompilation
         {
-            get { return ResponseKind == ProposalResponseKind.ReadOnlyQuery || ResponseKind == ProposalResponseKind.ActionProposal; }
+            get
+            {
+                return ResponseKind == ProposalResponseKind.InspectionProbe
+                    || ResponseKind == ProposalResponseKind.ReadOnlyQuery
+                    || ResponseKind == ProposalResponseKind.ActionProposal;
+            }
         }
 
         public bool ExecutesReadOnly
         {
-            get { return ResponseKind == ProposalResponseKind.ReadOnlyQuery; }
+            get { return ResponseKind == ProposalResponseKind.InspectionProbe || ResponseKind == ProposalResponseKind.ReadOnlyQuery; }
+        }
+
+        public bool ContinuesPlanning
+        {
+            get { return ResponseKind == ProposalResponseKind.InspectionProbe; }
         }
 
         public bool RequiresPreview
