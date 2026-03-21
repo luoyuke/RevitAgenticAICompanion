@@ -42,7 +42,6 @@ namespace RevitAgenticAICompanion.Runtime
                         string.Empty,
                         "low",
                         Array.Empty<string>(),
-                        Array.Empty<ProjectConventionRecord>(),
                         new ProposalProvenance("Local review", 0)));
             }
 
@@ -74,7 +73,6 @@ namespace RevitAgenticAICompanion.Runtime
                 "medium",
                 string.Empty,
                 Array.Empty<string>(),
-                Array.Empty<ProjectConventionRecord>(),
                 new ProposalProvenance("Local review", 0));
 
             return Task.FromResult(proposal);

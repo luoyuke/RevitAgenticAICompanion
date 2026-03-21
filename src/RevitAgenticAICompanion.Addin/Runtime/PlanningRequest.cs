@@ -9,7 +9,7 @@ namespace RevitAgenticAICompanion.Runtime
             string prompt,
             RevitContextSnapshot contextSnapshot,
             IReadOnlyList<ProbeEvidence> retrievedEvidence = null,
-            IReadOnlyList<ProjectConventionRecord> projectConventions = null,
+            IReadOnlyList<UserPreferenceRecord> userPreferences = null,
             int completedProbeCount = 0,
             int maxProbeCount = 3,
             DateTimeOffset? startedUtc = null)
@@ -17,7 +17,7 @@ namespace RevitAgenticAICompanion.Runtime
             Prompt = prompt;
             ContextSnapshot = contextSnapshot;
             RetrievedEvidence = retrievedEvidence ?? Array.Empty<ProbeEvidence>();
-            ProjectConventions = projectConventions ?? Array.Empty<ProjectConventionRecord>();
+            UserPreferences = userPreferences ?? Array.Empty<UserPreferenceRecord>();
             CompletedProbeCount = completedProbeCount;
             MaxProbeCount = maxProbeCount;
             StartedUtc = startedUtc ?? DateTimeOffset.UtcNow;
@@ -26,14 +26,14 @@ namespace RevitAgenticAICompanion.Runtime
         public string Prompt { get; }
         public RevitContextSnapshot ContextSnapshot { get; }
         public IReadOnlyList<ProbeEvidence> RetrievedEvidence { get; }
-        public IReadOnlyList<ProjectConventionRecord> ProjectConventions { get; }
+        public IReadOnlyList<UserPreferenceRecord> UserPreferences { get; }
         public int CompletedProbeCount { get; }
         public int MaxProbeCount { get; }
         public DateTimeOffset StartedUtc { get; }
 
         public PlanningRequest WithEvidence(
             ProbeEvidence evidence,
-            IReadOnlyList<ProjectConventionRecord> projectConventions)
+            IReadOnlyList<UserPreferenceRecord> userPreferences)
         {
             var evidenceList = new List<ProbeEvidence>(RetrievedEvidence ?? Array.Empty<ProbeEvidence>());
             if (evidence != null)
@@ -45,7 +45,7 @@ namespace RevitAgenticAICompanion.Runtime
                 Prompt,
                 ContextSnapshot,
                 evidenceList,
-                projectConventions ?? ProjectConventions,
+                userPreferences ?? UserPreferences,
                 evidenceList.Count,
                 MaxProbeCount,
                 StartedUtc);

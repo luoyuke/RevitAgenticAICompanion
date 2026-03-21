@@ -24,7 +24,6 @@ namespace RevitAgenticAICompanion.Runtime
             string probePurpose,
             string probeQuestion,
             IReadOnlyList<string> assumptions,
-            IReadOnlyList<ProjectConventionRecord> discoveredConventions,
             ProposalProvenance provenance)
         {
             ProposalId = Guid.NewGuid().ToString("N");
@@ -46,7 +45,6 @@ namespace RevitAgenticAICompanion.Runtime
             ProbePurpose = probePurpose ?? string.Empty;
             ProbeQuestion = probeQuestion ?? string.Empty;
             Assumptions = assumptions ?? new string[0];
-            DiscoveredConventions = discoveredConventions ?? new ProjectConventionRecord[0];
             Provenance = provenance ?? new ProposalProvenance("Unknown", 0);
         }
 
@@ -65,7 +63,6 @@ namespace RevitAgenticAICompanion.Runtime
             string confidenceLevel,
             string evidenceSummary,
             IReadOnlyList<string> assumptions,
-            IReadOnlyList<ProjectConventionRecord> discoveredConventions,
             ProposalProvenance provenance)
         {
             return new ProposalCandidate(
@@ -87,7 +84,6 @@ namespace RevitAgenticAICompanion.Runtime
                 string.Empty,
                 string.Empty,
                 assumptions,
-                discoveredConventions,
                 provenance);
         }
 
@@ -105,7 +101,6 @@ namespace RevitAgenticAICompanion.Runtime
             string probePurpose,
             string probeQuestion,
             IReadOnlyList<string> assumptions,
-            IReadOnlyList<ProjectConventionRecord> discoveredConventions,
             ProposalProvenance provenance)
         {
             return new ProposalCandidate(
@@ -127,7 +122,6 @@ namespace RevitAgenticAICompanion.Runtime
                 probePurpose,
                 probeQuestion,
                 assumptions,
-                discoveredConventions,
                 provenance);
         }
 
@@ -143,7 +137,6 @@ namespace RevitAgenticAICompanion.Runtime
             string confidenceLevel,
             string evidenceSummary,
             IReadOnlyList<string> assumptions,
-            IReadOnlyList<ProjectConventionRecord> discoveredConventions,
             ProposalProvenance provenance)
         {
             return new ProposalCandidate(
@@ -165,7 +158,6 @@ namespace RevitAgenticAICompanion.Runtime
                 string.Empty,
                 string.Empty,
                 assumptions,
-                discoveredConventions,
                 provenance);
         }
 
@@ -177,7 +169,6 @@ namespace RevitAgenticAICompanion.Runtime
             string scopeSummary,
             string confidenceLevel,
             IReadOnlyList<string> assumptions,
-            IReadOnlyList<ProjectConventionRecord> discoveredConventions,
             ProposalProvenance provenance)
         {
             return new ProposalCandidate(
@@ -199,7 +190,6 @@ namespace RevitAgenticAICompanion.Runtime
                 string.Empty,
                 string.Empty,
                 assumptions,
-                discoveredConventions,
                 provenance);
         }
 
@@ -222,7 +212,6 @@ namespace RevitAgenticAICompanion.Runtime
         public string ProbePurpose { get; }
         public string ProbeQuestion { get; }
         public IReadOnlyList<string> Assumptions { get; }
-        public IReadOnlyList<ProjectConventionRecord> DiscoveredConventions { get; }
         public ProposalProvenance Provenance { get; }
         public string SourceHash { get; set; }
         public string ArtifactDirectory { get; set; }

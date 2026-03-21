@@ -14,12 +14,14 @@ namespace RevitAgenticAICompanion.Storage
             ArtifactsPath = Path.Combine(RootPath, "artifacts");
             StatePath = Path.Combine(RootPath, "state");
             AuditDatabasePath = Path.Combine(StatePath, "audit.db");
+            UserMemoryPath = Path.Combine(StatePath, "memory.md");
         }
 
         public string RootPath { get; }
         public string ArtifactsPath { get; }
         public string StatePath { get; }
         public string AuditDatabasePath { get; }
+        public string UserMemoryPath { get; }
 
         public void EnsureCreated()
         {
