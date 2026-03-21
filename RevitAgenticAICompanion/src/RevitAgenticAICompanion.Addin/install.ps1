@@ -1,10 +1,15 @@
-$source = Join-Path $PSScriptRoot "RevitAgenticAICompanion.addin"
-$targetDir = Join-Path $env:APPDATA "Autodesk\Revit\Addins\2026"
-$target = Join-Path $targetDir "RevitAgenticAICompanion.addin"
+param(
+    [switch]$ForceSeed,
+    [switch]$ResetThreads
+)
 
-if (-not (Test-Path $targetDir)) {
-    New-Item -ItemType Directory -Path $targetDir | Out-Null
+$ErrorActionPreference = "Stop"
+
+$installer = Join-Path $PSScriptRoot "..\\..\\deploy\\Installer_2026-03-21\\install.ps1"
+$resolvedInstaller = [System.IO.Path]::GetFullPath($installer)
+
+if (-not (Test-Path $resolvedInstaller)) {
+    throw "Installer package not found: $resolvedInstaller"
 }
 
-Copy-Item -Path $source -Destination $target -Force
-Write-Host "Installed add-in manifest to $target"
+& $resolvedInstaller @PSBoundParameters
