@@ -21,14 +21,15 @@ namespace RevitAgenticAICompanion.Storage
             PlanningRequest planningRequest,
             ProposalCandidate proposal,
             ValidationReport validation,
-            GeneratedActionCompilationResult compilation)
+            GeneratedActionCompilationResult compilation,
+            ExecutionFailurePacket failurePacket = null)
         {
             var directoryName = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + proposal.ProposalId;
             var directory = Path.Combine(_paths.ArtifactsPath, directoryName);
             Directory.CreateDirectory(directory);
 
             File.WriteAllText(Path.Combine(directory, "generated-action.cs"), proposal.GeneratedSource ?? string.Empty, Utf8NoBom);
-            File.WriteAllText(Path.Combine(directory, "summary.txt"), BuildSummary(snapshot, planningRequest, proposal, validation, compilation), Utf8NoBom);
+            File.WriteAllText(Path.Combine(directory, "summary.txt"), BuildSummary(snapshot, planningRequest, proposal, validation, compilation, failurePacket), Utf8NoBom);
             File.WriteAllText(Path.Combine(directory, "compile.txt"), BuildCompilationSummary(compilation), Utf8NoBom);
             if (compilation.AssemblyBytes != null && compilation.AssemblyBytes.Length > 0)
             {
@@ -64,12 +65,48 @@ namespace RevitAgenticAICompanion.Storage
                 Utf8NoBom);
         }
 
+        public void WriteFailurePacket(PlanningSession session, ExecutionFailurePacket failurePacket)
+        {
+            if (session == null || failurePacket == null || string.IsNullOrWhiteSpace(session.Proposal?.ArtifactDirectory))
+            {
+                return;
+            }
+
+            File.WriteAllText(
+                Path.Combine(session.Proposal.ArtifactDirectory, "failure-packet.txt"),
+                BuildFailurePacketSummary(failurePacket),
+                Utf8NoBom);
+        }
+
+        public void WriteFailureAnalysis(PlanningSession failedSession, PlanningSession analysisSession)
+        {
+            if (failedSession == null || analysisSession == null || string.IsNullOrWhiteSpace(failedSession.Proposal?.ArtifactDirectory))
+            {
+                return;
+            }
+
+            var builder = new StringBuilder();
+            builder.AppendLine("Failure analysis run:");
+            builder.AppendLine(analysisSession.Proposal?.ProposalId ?? string.Empty);
+            builder.AppendLine("Response kind: " + analysisSession.Proposal?.ResponseKind);
+            builder.AppendLine("Planner: " + (analysisSession.Proposal?.Provenance?.Summary ?? "Unknown"));
+            builder.AppendLine("Summary:");
+            builder.AppendLine(analysisSession.Proposal?.ActionSummary ?? analysisSession.Proposal?.ReplyText ?? string.Empty);
+            builder.AppendLine("Artifact directory:");
+            builder.AppendLine(analysisSession.Proposal?.ArtifactDirectory ?? string.Empty);
+            File.WriteAllText(
+                Path.Combine(failedSession.Proposal.ArtifactDirectory, "failure-analysis.txt"),
+                builder.ToString(),
+                Utf8NoBom);
+        }
+
         private static string BuildSummary(
             RevitContextSnapshot snapshot,
             PlanningRequest planningRequest,
             ProposalCandidate proposal,
             ValidationReport validation,
-            GeneratedActionCompilationResult compilation)
+            GeneratedActionCompilationResult compilation,
+            ExecutionFailurePacket failurePacket)
         {
             var builder = new StringBuilder();
             builder.AppendLine("Prompt:");
@@ -105,6 +142,16 @@ namespace RevitAgenticAICompanion.Storage
             builder.AppendLine("Planner:");
             builder.AppendLine(proposal.Provenance?.Summary ?? "Unknown");
             builder.AppendLine();
+            if (failurePacket != null)
+            {
+                builder.AppendLine("Failure Context:");
+                builder.AppendLine("Stage: " + failurePacket.FailureStage);
+                builder.AppendLine("Exception Type: " + failurePacket.ExceptionType);
+                builder.AppendLine("Exception Message: " + failurePacket.ExceptionMessage);
+                builder.AppendLine("Original Run Id: " + failurePacket.OriginalRunId);
+                builder.AppendLine();
+            }
+
             if (proposal.Assumptions.Count > 0)
             {
                 builder.AppendLine("Assumptions:");
@@ -222,6 +269,30 @@ namespace RevitAgenticAICompanion.Storage
             builder.AppendLine("Target element ids: " + string.Join(", ", preview.TargetElementIds ?? Enumerable.Empty<long>()));
             builder.AppendLine("Error: " + preview.Error);
             builder.AppendLine("Prompt: " + (session?.Proposal?.UserPrompt ?? string.Empty));
+            return builder.ToString();
+        }
+
+        private static string BuildFailurePacketSummary(ExecutionFailurePacket failurePacket)
+        {
+            var builder = new StringBuilder();
+            builder.AppendLine("Failure stage: " + failurePacket.FailureStage);
+            builder.AppendLine("Exception type: " + failurePacket.ExceptionType);
+            builder.AppendLine("Exception message: " + failurePacket.ExceptionMessage);
+            builder.AppendLine("Transaction: " + failurePacket.TransactionName);
+            builder.AppendLine("Source hash: " + failurePacket.SourceHash);
+            builder.AppendLine("Document fingerprint: " + failurePacket.DocumentFingerprint);
+            builder.AppendLine("Preview summary: " + failurePacket.PreviewSummary);
+            builder.AppendLine("Changed element ids: " + string.Join(", ", failurePacket.ChangedElementIds ?? Enumerable.Empty<long>()));
+            builder.AppendLine("Was approved: " + failurePacket.WasApproved);
+            builder.AppendLine("Undo-hostile: " + failurePacket.IsUndoHostile);
+            builder.AppendLine("Stack trace top:");
+            foreach (var line in failurePacket.StackTraceTop ?? Array.Empty<string>())
+            {
+                builder.AppendLine("- " + line);
+            }
+
+            builder.AppendLine("Raw error:");
+            builder.AppendLine(failurePacket.RawError ?? string.Empty);
             return builder.ToString();
         }
     }

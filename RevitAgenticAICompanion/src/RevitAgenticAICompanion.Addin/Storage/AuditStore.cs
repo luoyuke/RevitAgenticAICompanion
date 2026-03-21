@@ -120,6 +120,41 @@ WHERE run_id = $run_id;";
                     command.Parameters.AddWithValue("$changed_element_ids_json", JsonSerializer.Serialize(execution.ChangedElementIds ?? Array.Empty<long>()));
                     command.Parameters.AddWithValue("$execution_summary", execution.Summary ?? string.Empty);
                     command.Parameters.AddWithValue("$execution_error", execution.Error ?? string.Empty);
+                     command.ExecuteNonQuery();
+                 }
+             }
+         }
+
+        public void WriteFailure(PlanningSession session, ExecutionFailurePacket failurePacket, string failureAnalysisRunId)
+        {
+            if (session == null || failurePacket == null)
+            {
+                return;
+            }
+
+            WritePlanning(session);
+
+            using (var connection = new SqliteConnection(_connectionString))
+            {
+                connection.Open();
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText =
+@"UPDATE audit_runs
+SET updated_utc = $now,
+    failure_stage = $failure_stage,
+    failure_exception_type = $failure_exception_type,
+    failure_exception_message = $failure_exception_message,
+    failure_packet_json = $failure_packet_json,
+    failure_analysis_run_id = $failure_analysis_run_id
+WHERE run_id = $run_id;";
+                    command.Parameters.AddWithValue("$now", DateTime.UtcNow.ToString("O"));
+                    command.Parameters.AddWithValue("$run_id", session.Proposal.ProposalId);
+                    command.Parameters.AddWithValue("$failure_stage", failurePacket.FailureStage ?? string.Empty);
+                    command.Parameters.AddWithValue("$failure_exception_type", failurePacket.ExceptionType ?? string.Empty);
+                    command.Parameters.AddWithValue("$failure_exception_message", failurePacket.ExceptionMessage ?? string.Empty);
+                    command.Parameters.AddWithValue("$failure_packet_json", JsonSerializer.Serialize(failurePacket));
+                    command.Parameters.AddWithValue("$failure_analysis_run_id", failureAnalysisRunId ?? string.Empty);
                     command.ExecuteNonQuery();
                 }
             }
@@ -173,6 +208,11 @@ WHERE run_id = $run_id;";
     probe_evidence_json TEXT NOT NULL DEFAULT '[]',
     project_conventions_json TEXT NOT NULL DEFAULT '[]',
     discovered_conventions_json TEXT NOT NULL DEFAULT '[]',
+    failure_stage TEXT NULL,
+    failure_exception_type TEXT NULL,
+    failure_exception_message TEXT NULL,
+    failure_packet_json TEXT NULL,
+    failure_analysis_run_id TEXT NULL,
     changed_element_ids_json TEXT NULL,
     execution_summary TEXT NULL,
     execution_error TEXT NULL,
@@ -200,6 +240,11 @@ WHERE run_id = $run_id;";
                 EnsureColumn(connection, "audit_runs", "probe_evidence_json", "TEXT NOT NULL DEFAULT '[]'");
                 EnsureColumn(connection, "audit_runs", "project_conventions_json", "TEXT NOT NULL DEFAULT '[]'");
                 EnsureColumn(connection, "audit_runs", "discovered_conventions_json", "TEXT NOT NULL DEFAULT '[]'");
+                EnsureColumn(connection, "audit_runs", "failure_stage", "TEXT NULL");
+                EnsureColumn(connection, "audit_runs", "failure_exception_type", "TEXT NULL");
+                EnsureColumn(connection, "audit_runs", "failure_exception_message", "TEXT NULL");
+                EnsureColumn(connection, "audit_runs", "failure_packet_json", "TEXT NULL");
+                EnsureColumn(connection, "audit_runs", "failure_analysis_run_id", "TEXT NULL");
             }
         }
 

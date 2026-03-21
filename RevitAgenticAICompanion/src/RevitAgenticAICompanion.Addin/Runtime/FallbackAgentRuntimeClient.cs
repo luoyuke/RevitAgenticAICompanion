@@ -79,5 +79,25 @@ namespace RevitAgenticAICompanion.Runtime
 
             return await _primary.RepairProposalAsync(request, failedProposal, compilation, cancellationToken);
         }
+
+        public async Task<ProposalCandidate> AnalyzeFailureAsync(
+            PlanningRequest request,
+            ProposalCandidate failedProposal,
+            ExecutionFailurePacket failurePacket,
+            CancellationToken cancellationToken)
+        {
+            var primaryStatus = await _primary.GetStatusAsync(cancellationToken);
+            if (!primaryStatus.IsAvailable)
+            {
+                return await _fallback.AnalyzeFailureAsync(request, failedProposal, failurePacket, cancellationToken);
+            }
+
+            if (!primaryStatus.CanPlan)
+            {
+                throw new InvalidOperationException(primaryStatus.Detail);
+            }
+
+            return await _primary.AnalyzeFailureAsync(request, failedProposal, failurePacket, cancellationToken);
+        }
     }
 }

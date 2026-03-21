@@ -160,7 +160,7 @@ namespace RevitAgenticAICompanion.Runtime
 
                     if (!probeExecution.IsSuccess)
                     {
-                        CurrentSession = session;
+                        CurrentSession = await HandleFailureAnalysisAsync(session, probeExecution, "probe");
                         return CurrentSession;
                     }
 
@@ -179,29 +179,7 @@ namespace RevitAgenticAICompanion.Runtime
 
                 CurrentSession = session;
 
-                if (proposal.RequiresCompilation && validation.IsValid && compilation.IsSuccess)
-                {
-                    if (proposal.ExecutesReadOnly)
-                    {
-                        var execution = await _dispatcher.Enqueue(new ExecuteReadOnlyProposalRequest(CurrentSession, _executor));
-                        CurrentSession.ExecutionResult = execution;
-                        _artifactStore.WriteExecution(CurrentSession, execution);
-                    }
-                    else if (proposal.RequiresPreview)
-                    {
-                        var preview = await _dispatcher.Enqueue(new PreviewGeneratedProposalRequest(CurrentSession, _executor));
-                        CurrentSession.PreviewResult = preview;
-                        _artifactStore.WritePreview(CurrentSession, preview);
-                    }
-                }
-
-                UpdateUserMemory(CurrentSession, CurrentSession.ExecutionResult);
-                _auditStore.WritePlanning(CurrentSession);
-                if (CurrentSession.ExecutionResult != null)
-                {
-                    _auditStore.WriteExecution(CurrentSession, CurrentSession.ExecutionResult);
-                }
-
+                await FinalizeSessionAsync(CurrentSession);
                 return CurrentSession;
             }
         }
@@ -269,9 +247,36 @@ namespace RevitAgenticAICompanion.Runtime
 
             var result = await _dispatcher.Enqueue(new ExecuteGeneratedProposalRequest(CurrentSession, _executor));
             CurrentSession.ExecutionResult = result;
-            UpdateUserMemory(CurrentSession, result);
-            _artifactStore.WriteExecution(CurrentSession, result);
-            _auditStore.WriteExecution(CurrentSession, result);
+            if (result.IsSuccess)
+            {
+                UpdateUserMemory(CurrentSession, result);
+                _artifactStore.WriteExecution(CurrentSession, result);
+                _auditStore.WriteExecution(CurrentSession, result);
+                return result;
+            }
+
+            var failedSession = CurrentSession;
+            var failurePacket = ExecutionFailurePacket.FromSession(failedSession, result, "execute");
+            _artifactStore.WriteExecution(failedSession, result);
+            _artifactStore.WriteFailurePacket(failedSession, failurePacket);
+            _auditStore.WriteExecution(failedSession, result);
+            _auditStore.WriteFailure(failedSession, failurePacket, string.Empty);
+
+            try
+            {
+                var analysisSession = await AnalyzeFailureAsync(failedSession, failurePacket);
+                if (analysisSession != null)
+                {
+                    CurrentSession = analysisSession;
+                    _artifactStore.WriteFailureAnalysis(failedSession, analysisSession);
+                    _auditStore.WriteFailure(failedSession, failurePacket, analysisSession.Proposal?.ProposalId ?? string.Empty);
+                }
+            }
+            catch
+            {
+                CurrentSession = failedSession;
+            }
+
             return result;
         }
 
@@ -280,7 +285,8 @@ namespace RevitAgenticAICompanion.Runtime
             PlanningRequest planningRequest,
             ProposalCandidate proposal,
             ValidationReport validation,
-            GeneratedActionCompilationResult compilation)
+            GeneratedActionCompilationResult compilation,
+            ExecutionFailurePacket failurePacket = null)
         {
             return new PlanningSession(
                 proposal,
@@ -288,7 +294,8 @@ namespace RevitAgenticAICompanion.Runtime
                 compilation,
                 snapshot,
                 planningRequest?.RetrievedEvidence ?? Array.Empty<ProbeEvidence>(),
-                planningRequest?.UserPreferences ?? Array.Empty<UserPreferenceRecord>());
+                planningRequest?.UserPreferences ?? Array.Empty<UserPreferenceRecord>(),
+                failurePacket);
         }
 
         private static string BuildBudgetExceededMessage(PlanningRequest request, TimeSpan elapsed)
@@ -324,6 +331,140 @@ namespace RevitAgenticAICompanion.Runtime
             }
 
             _userMemoryStore.UpdateFromTurn(session.Proposal?.UserPrompt, session.Proposal, execution);
+        }
+
+        private async Task FinalizeSessionAsync(PlanningSession session)
+        {
+            if (session == null)
+            {
+                return;
+            }
+
+            if (session.Proposal.RequiresCompilation && session.ValidationReport.IsValid && session.CompilationResult.IsSuccess)
+            {
+                if (session.Proposal.ExecutesReadOnly)
+                {
+                    var execution = await _dispatcher.Enqueue(new ExecuteReadOnlyProposalRequest(session, _executor));
+                    session.ExecutionResult = execution;
+                    _artifactStore.WriteExecution(session, execution);
+                    if (!execution.IsSuccess && session.FailurePacket == null)
+                    {
+                        CurrentSession = await HandleFailureAnalysisAsync(session, execution, "read-only");
+                        return;
+                    }
+                }
+                else if (session.Proposal.RequiresPreview)
+                {
+                    var preview = await _dispatcher.Enqueue(new PreviewGeneratedProposalRequest(session, _executor));
+                    session.PreviewResult = preview;
+                    _artifactStore.WritePreview(session, preview);
+                }
+            }
+
+            UpdateUserMemory(session, session.ExecutionResult);
+            _auditStore.WritePlanning(session);
+            if (session.ExecutionResult != null)
+            {
+                _auditStore.WriteExecution(session, session.ExecutionResult);
+            }
+        }
+
+        private async Task<PlanningSession> HandleFailureAnalysisAsync(
+            PlanningSession failedSession,
+            ProposalExecutionResult failureResult,
+            string failureStage)
+        {
+            if (failedSession == null)
+            {
+                return null;
+            }
+
+            if (failureResult == null || failureResult.IsSuccess || failedSession.FailurePacket != null)
+            {
+                return failedSession;
+            }
+
+            var failurePacket = ExecutionFailurePacket.FromSession(failedSession, failureResult, failureStage);
+            _artifactStore.WriteFailurePacket(failedSession, failurePacket);
+            _auditStore.WriteFailure(failedSession, failurePacket, string.Empty);
+
+            try
+            {
+                var analysisSession = await AnalyzeFailureAsync(failedSession, failurePacket);
+                if (analysisSession != null)
+                {
+                    _artifactStore.WriteFailureAnalysis(failedSession, analysisSession);
+                    _auditStore.WriteFailure(failedSession, failurePacket, analysisSession.Proposal?.ProposalId ?? string.Empty);
+                    return analysisSession;
+                }
+            }
+            catch
+            {
+                // Keep the original failed session when analysis itself fails.
+            }
+
+            return failedSession;
+        }
+
+        private async Task<PlanningSession> AnalyzeFailureAsync(PlanningSession failedSession, ExecutionFailurePacket failurePacket)
+        {
+            var planningRequest = new PlanningRequest(
+                failedSession.Proposal?.UserPrompt,
+                failedSession.ContextSnapshot,
+                failedSession.RetrievedEvidence,
+                failedSession.UserPreferences,
+                failedSession.RetrievedEvidence?.Count ?? 0,
+                MaxInspectionProbes);
+
+            var analyzedProposal = await _agentRuntimeClient.AnalyzeFailureAsync(
+                planningRequest,
+                failedSession.Proposal,
+                failurePacket,
+                CancellationToken.None);
+            analyzedProposal.SourceHash = ComputeSourceHash(analyzedProposal.GeneratedSource);
+
+            var validation = new ValidationReport();
+            var compilation = GeneratedActionCompilationResult.NotApplicable();
+            if (analyzedProposal.RequiresCompilation)
+            {
+                validation = _validator.Validate(analyzedProposal);
+                validation.IsUndoHostile |= analyzedProposal.IsUndoHostile;
+                compilation = _compiler.Compile(analyzedProposal);
+                if (!compilation.IsSuccess)
+                {
+                    analyzedProposal = await _agentRuntimeClient.RepairProposalAsync(planningRequest, analyzedProposal, compilation, CancellationToken.None);
+                    analyzedProposal.SourceHash = ComputeSourceHash(analyzedProposal.GeneratedSource);
+                    validation = _validator.Validate(analyzedProposal);
+                    validation.IsUndoHostile |= analyzedProposal.IsUndoHostile;
+                    compilation = analyzedProposal.RequiresCompilation
+                        ? _compiler.Compile(analyzedProposal)
+                        : GeneratedActionCompilationResult.NotApplicable();
+                }
+
+                if (!compilation.IsSuccess)
+                {
+                    validation.Errors.Add("Generated code failed compilation.");
+                }
+            }
+
+            analyzedProposal.ArtifactDirectory = _artifactStore.WriteProposal(
+                failedSession.ContextSnapshot,
+                planningRequest,
+                analyzedProposal,
+                validation,
+                compilation,
+                failurePacket);
+
+            var analysisSession = BuildSession(
+                failedSession.ContextSnapshot,
+                planningRequest,
+                analyzedProposal,
+                validation,
+                compilation,
+                failurePacket);
+
+            await FinalizeSessionAsync(analysisSession);
+            return analysisSession;
         }
 
         private static string ComputeSourceHash(string source)

@@ -139,23 +139,12 @@ namespace RevitAgenticAICompanion.UI
                 SetBusyState(true);
                 AppendLog("Planning from current Revit context...");
                 var session = await _runtimeCoordinator.CreateProposalAsync(_promptTextBox.Text, CancellationToken.None);
-                _summaryTextBox.Text = BuildSummary(session);
-                _sourceTextBox.Text = session.Proposal.RequiresCompilation
-                    ? session.Proposal.GeneratedSource ?? string.Empty
-                    : session.Proposal.ReplyText ?? string.Empty;
+                ApplySessionToUi(session);
 
-                _approveButton.IsEnabled = session.Proposal.RequiresApproval
-                    && session.ValidationReport.IsValid
-                    && session.CompilationResult.IsSuccess
-                    && session.PreviewResult != null
-                    && session.PreviewResult.IsSuccess
-                    && !session.ValidationReport.IsUndoHostile;
-                _confirmButton.IsEnabled = session.Proposal.RequiresApproval
-                    && session.ValidationReport.IsValid
-                    && session.CompilationResult.IsSuccess
-                    && session.PreviewResult != null
-                    && session.PreviewResult.IsSuccess
-                    && session.ValidationReport.IsUndoHostile;
+                if (session.FailurePacket != null)
+                {
+                    AppendLog("Failure analyzed. Stage: " + session.FailurePacket.FailureStage);
+                }
 
                 AppendLog("Response ready. Planner: " + session.Proposal.Provenance.Summary);
                 AppendLog("Response kind: " + session.Proposal.ResponseKind);
@@ -212,6 +201,7 @@ namespace RevitAgenticAICompanion.UI
             try
             {
                 SetBusyState(true);
+                var previousProposalId = _runtimeCoordinator.CurrentSession?.Proposal?.ProposalId ?? string.Empty;
                 var approved = await _runtimeCoordinator.ApproveCurrentProposalAsync(explicitConfirm);
                 if (!approved)
                 {
@@ -224,6 +214,18 @@ namespace RevitAgenticAICompanion.UI
                 if (!execution.IsSuccess)
                 {
                     AppendLog("Execution failed: " + execution.Error);
+                    var latestSession = _runtimeCoordinator.CurrentSession;
+                    if (latestSession != null && !string.Equals(latestSession.Proposal?.ProposalId, previousProposalId, StringComparison.Ordinal))
+                    {
+                        ApplySessionToUi(latestSession);
+                        AppendLog("Failure analyzed. Planner: " + latestSession.Proposal.Provenance.Summary);
+                        AppendLog("Failure analysis response kind: " + latestSession.Proposal.ResponseKind);
+                        if (latestSession.Proposal.RequiresApproval)
+                        {
+                            AppendLog("A corrected proposal is ready for review.");
+                        }
+                    }
+
                     return;
                 }
 
@@ -452,6 +454,16 @@ namespace RevitAgenticAICompanion.UI
                 }
             }
 
+            if (session.FailurePacket != null)
+            {
+                summary += Environment.NewLine + Environment.NewLine +
+                    "Failure Context:" + Environment.NewLine +
+                    "Stage: " + session.FailurePacket.FailureStage + Environment.NewLine +
+                    "Exception type: " + session.FailurePacket.ExceptionType + Environment.NewLine +
+                    "Exception message: " + session.FailurePacket.ExceptionMessage + Environment.NewLine +
+                    "Original run id: " + session.FailurePacket.OriginalRunId;
+            }
+
             if (session.Proposal.ContinuesPlanning)
             {
                 summary += Environment.NewLine + Environment.NewLine +
@@ -527,6 +539,27 @@ namespace RevitAgenticAICompanion.UI
         private static FontFamily CreateUiFontFamily()
         {
             return new FontFamily("Segoe UI");
+        }
+
+        private void ApplySessionToUi(PlanningSession session)
+        {
+            _summaryTextBox.Text = BuildSummary(session);
+            _sourceTextBox.Text = session.Proposal.RequiresCompilation
+                ? session.Proposal.GeneratedSource ?? string.Empty
+                : session.Proposal.ReplyText ?? string.Empty;
+
+            _approveButton.IsEnabled = session.Proposal.RequiresApproval
+                && session.ValidationReport.IsValid
+                && session.CompilationResult.IsSuccess
+                && session.PreviewResult != null
+                && session.PreviewResult.IsSuccess
+                && !session.ValidationReport.IsUndoHostile;
+            _confirmButton.IsEnabled = session.Proposal.RequiresApproval
+                && session.ValidationReport.IsValid
+                && session.CompilationResult.IsSuccess
+                && session.PreviewResult != null
+                && session.PreviewResult.IsSuccess
+                && session.ValidationReport.IsUndoHostile;
         }
     }
 }

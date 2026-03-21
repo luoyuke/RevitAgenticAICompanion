@@ -235,7 +235,7 @@ namespace RevitAgenticAICompanion.Storage
                 var line = rawLine?.Trim() ?? string.Empty;
                 if (line.StartsWith("### ", StringComparison.Ordinal))
                 {
-                    var key = line.Substring(4).Trim();
+                    var key = NormalizeKey(line.Substring(4).Trim());
                     current = AllowedKeys.Contains(key)
                         ? new UserPreferenceRecord(key, string.Empty, string.Empty, string.Empty, DateTimeOffset.MinValue)
                         : null;
@@ -247,7 +247,7 @@ namespace RevitAgenticAICompanion.Storage
                     continue;
                 }
 
-                if (current == null || !line.StartsWith("- ", StringComparison.Ordinal))
+                if (current == null || !IsPreferenceFieldLine(line))
                 {
                     continue;
                 }
@@ -258,7 +258,7 @@ namespace RevitAgenticAICompanion.Storage
                     continue;
                 }
 
-                var field = line.Substring(2, separatorIndex - 2).Trim();
+                var field = NormalizeKey(line.Substring(2, separatorIndex - 2).Trim());
                 var value = line.Substring(separatorIndex + 1).Trim();
                 current = UpdateField(current, field, value);
                 _entries[current.Key] = current;
@@ -267,6 +267,19 @@ namespace RevitAgenticAICompanion.Storage
             _entries = _entries
                 .Where(pair => !string.IsNullOrWhiteSpace(pair.Value.Value))
                 .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static bool IsPreferenceFieldLine(string line)
+        {
+            return line.StartsWith("- ", StringComparison.Ordinal) ||
+                line.StartsWith("* ", StringComparison.Ordinal);
+        }
+
+        private static string NormalizeKey(string key)
+        {
+            return (key ?? string.Empty)
+                .Trim()
+                .Replace("\\_", "_");
         }
 
         private static UserPreferenceRecord UpdateField(UserPreferenceRecord record, string field, string value)

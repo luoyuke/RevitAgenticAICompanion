@@ -11,7 +11,8 @@ namespace RevitAgenticAICompanion.Runtime
             GeneratedActionCompilationResult compilationResult,
             RevitContextSnapshot contextSnapshot,
             IReadOnlyList<ProbeEvidence> retrievedEvidence,
-            IReadOnlyList<UserPreferenceRecord> userPreferences)
+            IReadOnlyList<UserPreferenceRecord> userPreferences,
+            ExecutionFailurePacket failurePacket = null)
         {
             Proposal = proposal;
             ValidationReport = validationReport;
@@ -19,6 +20,7 @@ namespace RevitAgenticAICompanion.Runtime
             ContextSnapshot = contextSnapshot;
             RetrievedEvidence = retrievedEvidence ?? Array.Empty<ProbeEvidence>();
             UserPreferences = userPreferences ?? Array.Empty<UserPreferenceRecord>();
+            FailurePacket = failurePacket;
         }
 
         public ProposalCandidate Proposal { get; }
@@ -27,6 +29,7 @@ namespace RevitAgenticAICompanion.Runtime
         public RevitContextSnapshot ContextSnapshot { get; }
         public IReadOnlyList<ProbeEvidence> RetrievedEvidence { get; }
         public IReadOnlyList<UserPreferenceRecord> UserPreferences { get; }
+        public ExecutionFailurePacket FailurePacket { get; }
         public GeneratedActionPreviewResult PreviewResult { get; set; }
         public bool IsApproved { get; set; }
         public ProposalExecutionResult ExecutionResult { get; set; }
