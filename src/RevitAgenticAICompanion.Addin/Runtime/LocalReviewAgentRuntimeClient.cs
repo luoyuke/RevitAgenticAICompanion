@@ -87,6 +87,27 @@ namespace RevitAgenticAICompanion.Runtime
             return Task.FromResult(failedProposal);
         }
 
+        public Task<ProposalCandidate> AnalyzeFailureAsync(
+            PlanningRequest request,
+            ProposalCandidate failedProposal,
+            ExecutionFailurePacket failurePacket,
+            CancellationToken cancellationToken)
+        {
+            var explanation = "Execution failed in local review mode. " +
+                (failurePacket?.ExceptionMessage ?? failurePacket?.RawError ?? "No structured failure details were available.") +
+                " Sign in to Codex for automatic failure analysis and repair proposals.";
+            return Task.FromResult(
+                ProposalCandidate.CreateReply(
+                    request?.Prompt ?? failedProposal?.UserPrompt ?? string.Empty,
+                    explanation,
+                    "reply",
+                    "low",
+                    string.Empty,
+                    "low",
+                    Array.Empty<string>(),
+                    new ProposalProvenance("Local review", 0)));
+        }
+
         private static string ResolveCategoryName(PlanningRequest request)
         {
             if (request.ContextSnapshot.SelectedCategoryNames.Count > 0)

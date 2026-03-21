@@ -163,6 +163,39 @@ namespace RevitAgenticAICompanion.Runtime
             return BuildProposalCandidate(request.Prompt, repairedData, 1);
         }
 
+        public async Task<ProposalCandidate> AnalyzeFailureAsync(
+            PlanningRequest request,
+            ProposalCandidate failedProposal,
+            ExecutionFailurePacket failurePacket,
+            CancellationToken cancellationToken)
+        {
+            if (request == null)
+            {
+                throw new ArgumentNullException(nameof(request));
+            }
+
+            if (failedProposal == null)
+            {
+                throw new ArgumentNullException(nameof(failedProposal));
+            }
+
+            if (failurePacket == null)
+            {
+                throw new ArgumentNullException(nameof(failurePacket));
+            }
+
+            var prompt = BuildFailureAnalysisPrompt(request, failedProposal, failurePacket);
+            var structuredJson = await RunPlanningTurnAsync(request.ContextSnapshot, prompt, true, cancellationToken);
+
+            var analysisData = JsonSerializer.Deserialize<CodexPlanningPayload>(structuredJson, _jsonOptions);
+            if (analysisData == null)
+            {
+                throw new InvalidOperationException("Codex returned an empty failure-analysis payload.");
+            }
+
+            return BuildProposalCandidate(request.Prompt, analysisData, failedProposal.Provenance?.RepairCount ?? 0);
+        }
+
         public void Dispose()
         {
         }
@@ -917,13 +950,7 @@ namespace RevitAgenticAICompanion.Runtime
             builder.AppendLine("- reply_only: for greetings, general questions, clarification, read-only guidance, or anything that should not execute code.");
             builder.AppendLine("- inspection_probe: when you need live project evidence before you can safely answer or propose a write.");
             builder.AppendLine("- read_only_query: when the user needs one read-only model inspection or answer without continuing to a write proposal.");
-            builder.AppendLine("- action_proposal: only when you are confident the user wants a Revit model change and the request fits the current demo capability.");
-            builder.AppendLine("Current executable demo capabilities:");
-            builder.AppendLine("- create or replace a single schedule/BOQ ViewSchedule in Revit");
-            builder.AppendLine("- inspect the active document, current selection, parameters, views, systems, and warnings in read-only mode");
-            builder.AppendLine("- batch-update one writable parameter across selected elements or a clearly bounded matching set");
-            builder.AppendLine("- clash coordination in a bounded scope such as the current selection, active view, or an explicitly named confined area");
-            builder.AppendLine("- higher-risk creation workflows such as localized family/device placement, bounded wall/system creation, and limited MEP adjustments");
+            builder.AppendLine("- action_proposal: only when you are confident the user wants a Revit model change and you can keep the write scope bounded, explicit, and reviewable.");
             builder.AppendLine("This host compiles and executes C# in-process, but the host owns the transaction lifecycle.");
             builder.AppendLine("Planning model:");
             builder.AppendLine("- Ambient context is advisory.");
@@ -945,12 +972,10 @@ namespace RevitAgenticAICompanion.Runtime
             builder.AppendLine("- Inspection-first is required when the task depends on project-specific naming, parameter values, system names, family/type matching, linked-model coordination, level-based logic, clash coordination, or semantic labels such as domestic, supply, return, fire, architectural, or writable parameter targets.");
             builder.AppendLine("- You may request at most " + request.MaxProbeCount + " inspection_probe steps for this user turn. If you still lack evidence after that, return reply_only or action_proposal with explicit assumptions and low confidence.");
             builder.AppendLine("- Do not loop forever. If existing evidence already answers the question, do not ask for another probe.");
-            builder.AppendLine("- For schedule actions, keep scope limited to creating or replacing a single ViewSchedule.");
-            builder.AppendLine("- For parameter edits, prefer the current selection first. Otherwise keep the target set to one clearly named category and one parameter.");
-            builder.AppendLine("- For parameter edits, Preview must only inspect and report the affected elements and values. Execute performs the write.");
-            builder.AppendLine("- For clash coordination, capabilityBand must be \"clash_coordination\". Keep scope to selected elements, active view, or a clearly stated confined area. Preview must report target element ids, the clash/fix summary, and exactly what would change. Execute must perform one bounded fix set only.");
-            builder.AppendLine("- For higher-risk creation workflows, capabilityBand must be \"creation_workflow\". Keep scope local to the current selection, current view, current level, current room, or an explicitly requested confined area. Prefer creating or adjusting a small number of elements over broad refactors.");
-            builder.AppendLine("- For higher-risk creation workflows, set riskLevel to \"high\" unless the work is clearly localized and reversible. Preview must name anchors, targets, and likely created or modified element ids when possible.");
+            builder.AppendLine("- For action_proposal, keep the target set explicit. Prefer the current selection, active view, current level, current room, one clearly named category, or one clearly stated confined area.");
+            builder.AppendLine("- For action_proposal, Preview must inspect and report the affected elements, anchors, values, or likely created/modified targets before Execute performs the write.");
+            builder.AppendLine("- Use capabilityBand to describe the workflow honestly, such as schedule_workflow, parameter_edit, clash_coordination, or creation_workflow.");
+            builder.AppendLine("- Set riskLevel based on actual scope and reversibility, not on whether the task sounds routine.");
             builder.AppendLine("- Return human-readable transaction names.");
             builder.AppendLine("- The generated Execute method must return GeneratedActionResult with changed element ids as IReadOnlyList<long>.");
             builder.AppendLine("- The generated Preview method must return GeneratedActionResult with target element ids as IReadOnlyList<long>.");
@@ -1062,6 +1087,86 @@ namespace RevitAgenticAICompanion.Runtime
             foreach (var diagnostic in compilation.Diagnostics ?? Array.Empty<string>())
             {
                 builder.AppendLine("- " + diagnostic);
+            }
+
+            return builder.ToString();
+        }
+
+        private static string BuildFailureAnalysisPrompt(
+            PlanningRequest request,
+            ProposalCandidate failedProposal,
+            ExecutionFailurePacket failurePacket)
+        {
+            var builder = new StringBuilder();
+            builder.AppendLine("Analyze a failed Revit execution and decide the next safe step.");
+            builder.AppendLine("Return JSON only and obey the provided output schema.");
+            builder.AppendLine("Allowed response kinds for this failure-analysis turn:");
+            builder.AppendLine("- reply_only: explain the failure and state the safest next step without proposing a new write.");
+            builder.AppendLine("- action_proposal: propose one corrected bounded write only if the failure can be safely repaired from the provided evidence.");
+            builder.AppendLine("Do not return inspection_probe or read_only_query for this turn.");
+            builder.AppendLine("Do not auto-retry blindly. If you propose a repair, it must require fresh preview and approval.");
+            builder.AppendLine("Requirements:");
+            builder.AppendLine("- Keep the repaired write scope bounded and explicit.");
+            builder.AppendLine("- Populate every schema field.");
+            builder.AppendLine("- If you return reply_only, set generatedSource = \"\", transactionName = \"\", isUndoHostile = false, capabilityBand = \"reply\", riskLevel = \"low\", and explain the failure plainly.");
+            builder.AppendLine("- If you return action_proposal, use the same entry points: GeneratedActions.CompanionAction.Execute(UIApplication uiapp) and GeneratedActions.CompanionAction.Preview(UIApplication uiapp).");
+            builder.AppendLine("- Do not create Transaction or TransactionGroup objects.");
+            builder.AppendLine("- Use elementId.Value, not IntegerValue.");
+            builder.AppendLine("- Return GeneratedActionResult with IReadOnlyList<long> changed element ids.");
+            builder.AppendLine("- Prefer a strategy change over repeating the failed API call.");
+            builder.AppendLine();
+            builder.AppendLine("Original user prompt:");
+            builder.AppendLine(request.Prompt ?? string.Empty);
+            builder.AppendLine();
+            builder.AppendLine("Failed action summary:");
+            builder.AppendLine(failedProposal.ActionSummary ?? string.Empty);
+            builder.AppendLine();
+            builder.AppendLine("Failure packet:");
+            builder.AppendLine("FailureStage: " + (failurePacket.FailureStage ?? string.Empty));
+            builder.AppendLine("ExceptionType: " + (failurePacket.ExceptionType ?? string.Empty));
+            builder.AppendLine("ExceptionMessage: " + (failurePacket.ExceptionMessage ?? string.Empty));
+            builder.AppendLine("TransactionName: " + (failurePacket.TransactionName ?? string.Empty));
+            builder.AppendLine("SourceHash: " + (failurePacket.SourceHash ?? string.Empty));
+            builder.AppendLine("DocumentFingerprint: " + (failurePacket.DocumentFingerprint ?? string.Empty));
+            builder.AppendLine("PreviewSummary: " + (failurePacket.PreviewSummary ?? string.Empty));
+            builder.AppendLine("WasApproved: " + failurePacket.WasApproved);
+            builder.AppendLine("UndoHostile: " + failurePacket.IsUndoHostile);
+            builder.AppendLine("ChangedElementIds: " + string.Join(", ", failurePacket.ChangedElementIds ?? Array.Empty<long>()));
+            builder.AppendLine("StackTraceTop:");
+            foreach (var line in failurePacket.StackTraceTop ?? Array.Empty<string>())
+            {
+                builder.AppendLine("- " + line);
+            }
+
+            builder.AppendLine();
+            builder.AppendLine("Raw error:");
+            builder.AppendLine(failurePacket.RawError ?? string.Empty);
+            builder.AppendLine();
+            builder.AppendLine("Retrieved evidence for this turn:");
+            if (request.RetrievedEvidence == null || request.RetrievedEvidence.Count == 0)
+            {
+                builder.AppendLine("- none");
+            }
+            else
+            {
+                foreach (var evidence in request.RetrievedEvidence)
+                {
+                    builder.AppendLine("- Probe " + evidence.ProbeOrdinal + ": " + evidence.Summary);
+                }
+            }
+
+            builder.AppendLine();
+            builder.AppendLine("User preferences:");
+            if (request.UserPreferences == null || request.UserPreferences.Count == 0)
+            {
+                builder.AppendLine("- none");
+            }
+            else
+            {
+                foreach (var preference in request.UserPreferences)
+                {
+                    builder.AppendLine("- [" + preference.ConfidenceLevel + "] " + preference.Key + " = " + preference.Value);
+                }
             }
 
             return builder.ToString();

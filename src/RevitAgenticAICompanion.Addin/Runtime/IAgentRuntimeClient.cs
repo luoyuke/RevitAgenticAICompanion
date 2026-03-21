@@ -13,5 +13,10 @@ namespace RevitAgenticAICompanion.Runtime
             ProposalCandidate failedProposal,
             GeneratedActionCompilationResult compilation,
             CancellationToken cancellationToken);
+        Task<ProposalCandidate> AnalyzeFailureAsync(
+            PlanningRequest request,
+            ProposalCandidate failedProposal,
+            ExecutionFailurePacket failurePacket,
+            CancellationToken cancellationToken);
     }
 }
