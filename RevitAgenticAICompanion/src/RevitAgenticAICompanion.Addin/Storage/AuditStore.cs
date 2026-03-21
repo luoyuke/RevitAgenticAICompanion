@@ -241,8 +241,8 @@ WHERE run_id = $run_id;";
             command.Parameters.AddWithValue("$assumptions_json", JsonSerializer.Serialize(proposal.Assumptions ?? Array.Empty<string>()));
             command.Parameters.AddWithValue("$probe_count", session.RetrievedEvidence?.Count ?? 0);
             command.Parameters.AddWithValue("$probe_evidence_json", JsonSerializer.Serialize(session.RetrievedEvidence ?? Array.Empty<ProbeEvidence>()));
-            command.Parameters.AddWithValue("$project_conventions_json", JsonSerializer.Serialize(session.ProjectConventions ?? Array.Empty<ProjectConventionRecord>()));
-            command.Parameters.AddWithValue("$discovered_conventions_json", JsonSerializer.Serialize(proposal.DiscoveredConventions ?? Array.Empty<ProjectConventionRecord>()));
+            command.Parameters.AddWithValue("$project_conventions_json", "[]");
+            command.Parameters.AddWithValue("$discovered_conventions_json", "[]");
             command.Parameters.AddWithValue("$diagnostics_json", JsonSerializer.Serialize(session.CompilationResult?.Diagnostics ?? Array.Empty<string>()));
         }
 

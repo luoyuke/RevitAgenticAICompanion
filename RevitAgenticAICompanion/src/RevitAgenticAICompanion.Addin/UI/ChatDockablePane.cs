@@ -442,23 +442,13 @@ namespace RevitAgenticAICompanion.UI
                 }
             }
 
-            if (session.ProjectConventions.Count > 0)
+            if (session.UserPreferences.Count > 0)
             {
-                summary += Environment.NewLine + Environment.NewLine + "Project Memory:";
-                foreach (var convention in session.ProjectConventions)
+                summary += Environment.NewLine + Environment.NewLine + "User Preferences:";
+                foreach (var preference in session.UserPreferences)
                 {
                     summary += Environment.NewLine +
-                        "[" + convention.ConfidenceLevel + "] " + convention.ConventionType + ": " + convention.Name + " = " + convention.Value;
-                }
-            }
-
-            if (session.Proposal.DiscoveredConventions.Count > 0)
-            {
-                summary += Environment.NewLine + Environment.NewLine + "Discovered Conventions:";
-                foreach (var convention in session.Proposal.DiscoveredConventions)
-                {
-                    summary += Environment.NewLine +
-                        "[" + convention.ConfidenceLevel + "] " + convention.ConventionType + ": " + convention.Name + " = " + convention.Value;
+                        "[" + preference.ConfidenceLevel + "] " + preference.Key + " = " + preference.Value;
                 }
             }
 

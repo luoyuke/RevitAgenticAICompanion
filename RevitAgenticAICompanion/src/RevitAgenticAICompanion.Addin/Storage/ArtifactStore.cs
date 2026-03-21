@@ -140,17 +140,10 @@ namespace RevitAgenticAICompanion.Storage
             }
 
             builder.AppendLine();
-            builder.AppendLine("Project Memory:");
-            foreach (var convention in planningRequest?.ProjectConventions ?? Array.Empty<ProjectConventionRecord>())
+            builder.AppendLine("User Preferences:");
+            foreach (var preference in planningRequest?.UserPreferences ?? Array.Empty<UserPreferenceRecord>())
             {
-                builder.AppendLine("- [" + convention.ConfidenceLevel + "] " + convention.ConventionType + ": " + convention.Name + " = " + convention.Value + " (" + convention.Rationale + ")");
-            }
-
-            builder.AppendLine();
-            builder.AppendLine("Discovered Conventions:");
-            foreach (var convention in proposal.DiscoveredConventions ?? Array.Empty<ProjectConventionRecord>())
-            {
-                builder.AppendLine("- [" + convention.ConfidenceLevel + "] " + convention.ConventionType + ": " + convention.Name + " = " + convention.Value + " (" + convention.Rationale + ")");
+                builder.AppendLine("- [" + preference.ConfidenceLevel + "] " + preference.Key + " = " + preference.Value + " (" + preference.Source + ")");
             }
 
             builder.AppendLine();

@@ -928,11 +928,11 @@ namespace RevitAgenticAICompanion.Runtime
             builder.AppendLine("Planning model:");
             builder.AppendLine("- Ambient context is advisory.");
             builder.AppendLine("- Retrieved evidence from executed inspection probes is authoritative for this turn.");
-            builder.AppendLine("- Project memory stores discovered conventions from prior turns. Use it as advisory memory, not as proof.");
+            builder.AppendLine("- User preferences are durable cross-project preferences only. They are not project facts.");
             builder.AppendLine("Rules:");
             builder.AppendLine("- Always populate every schema field.");
-            builder.AppendLine("- Always set capabilityBand, riskLevel, scopeSummary, confidenceLevel, evidenceSummary, probePurpose, probeQuestion, assumptions, and discoveredConventions.");
-            builder.AppendLine("- For reply_only, set messageText to the user-facing reply, actionSummary = \"\", transactionName = \"\", generatedSource = \"\", isUndoHostile = false, capabilityBand = \"reply\", riskLevel = \"low\", scopeSummary = \"\", confidenceLevel = \"low\", evidenceSummary = \"\", probePurpose = \"\", probeQuestion = \"\", assumptions = [], discoveredConventions = [].");
+            builder.AppendLine("- Always set capabilityBand, riskLevel, scopeSummary, confidenceLevel, evidenceSummary, probePurpose, probeQuestion, and assumptions.");
+            builder.AppendLine("- For reply_only, set messageText to the user-facing reply, actionSummary = \"\", transactionName = \"\", generatedSource = \"\", isUndoHostile = false, capabilityBand = \"reply\", riskLevel = \"low\", scopeSummary = \"\", confidenceLevel = \"low\", evidenceSummary = \"\", probePurpose = \"\", probeQuestion = \"\", assumptions = [].");
             builder.AppendLine("- For inspection_probe, set messageText to a short explanation of what will be inspected and why. Set transactionName = \"\", isUndoHostile = false, capabilityBand = \"read_query\", riskLevel = \"low\", and generate source for GeneratedActions.CompanionAction.Execute(UIApplication uiapp).");
             builder.AppendLine("- For inspection_probe, probePurpose and probeQuestion are required and must be concrete.");
             builder.AppendLine("- For read_only_query, use generated read-only source only when live model inspection is required for the final answer. Set transactionName = \"\", isUndoHostile = false, capabilityBand = \"read_query\", and a useful scopeSummary.");
@@ -961,7 +961,8 @@ namespace RevitAgenticAICompanion.Runtime
             builder.AppendLine("- Prefer straightforward, compile-safe Revit API usage over complex heuristics.");
             builder.AppendLine("- Confidence levels are low, medium, or high.");
             builder.AppendLine("- Assumptions must list any unverified mapping or convention guess that affects the answer or write plan.");
-            builder.AppendLine("- discoveredConventions should include conventions that are grounded by retrieved evidence or clearly stated user instruction.");
+            builder.AppendLine("- User preferences can shape language, explanation depth, approval style, and inspection bias, but they must not choose project targets or conventions.");
+            builder.AppendLine("- Current prompt overrides user preferences. Live BIM evidence overrides user preferences when they conflict.");
             builder.AppendLine("- If you can answer conversationally without model mutation, prefer reply_only.");
             builder.AppendLine();
             builder.AppendLine("Prompt:");
@@ -975,16 +976,16 @@ namespace RevitAgenticAICompanion.Runtime
             builder.AppendLine("SelectedCategories: " + string.Join(", ", snapshot.SelectedCategoryNames));
             builder.AppendLine("AvailableCategories: " + string.Join(", ", snapshot.AvailableModelCategories.Take(150)));
             builder.AppendLine();
-            builder.AppendLine("Project memory (advisory):");
-            if (request.ProjectConventions == null || request.ProjectConventions.Count == 0)
+            builder.AppendLine("User Preferences (cross-project defaults):");
+            if (request.UserPreferences == null || request.UserPreferences.Count == 0)
             {
                 builder.AppendLine("- none");
             }
             else
             {
-                foreach (var convention in request.ProjectConventions.Take(20))
+                foreach (var preference in request.UserPreferences.Take(20))
                 {
-                    builder.AppendLine("- [" + convention.ConfidenceLevel + "] " + convention.ConventionType + ": " + convention.Name + " = " + convention.Value + " (" + convention.Rationale + ")");
+                    builder.AppendLine("- [" + preference.ConfidenceLevel + "] " + preference.Key + " = " + preference.Value + " (" + preference.Source + ")");
                 }
             }
 
@@ -1039,7 +1040,7 @@ namespace RevitAgenticAICompanion.Runtime
             builder.AppendLine("Requirements:");
             builder.AppendLine("- Keep the same responseKind unless compiler diagnostics prove the previous kind was wrong.");
             builder.AppendLine("- Return a concise messageText that explains the repaired plan.");
-            builder.AppendLine("- Populate every schema field, including actionSummary, transactionName, generatedSource, isUndoHostile, capabilityBand, riskLevel, scopeSummary, confidenceLevel, evidenceSummary, probePurpose, probeQuestion, assumptions, and discoveredConventions.");
+            builder.AppendLine("- Populate every schema field, including actionSummary, transactionName, generatedSource, isUndoHostile, capabilityBand, riskLevel, scopeSummary, confidenceLevel, evidenceSummary, probePurpose, probeQuestion, and assumptions.");
             builder.AppendLine("- Keep the same entry points: GeneratedActions.CompanionAction.Execute(UIApplication uiapp), and if this is an action_proposal also GeneratedActions.CompanionAction.Preview(UIApplication uiapp).");
             builder.AppendLine("- Do not create Transaction or TransactionGroup objects.");
             builder.AppendLine("- Return GeneratedActionResult with IReadOnlyList<long> changed element ids.");
@@ -1072,7 +1073,7 @@ namespace RevitAgenticAICompanion.Runtime
             {
                 ["type"] = "object",
                 ["additionalProperties"] = false,
-                ["required"] = new JsonArray("responseKind", "messageText", "actionSummary", "transactionName", "generatedSource", "isUndoHostile", "capabilityBand", "riskLevel", "scopeSummary", "confidenceLevel", "evidenceSummary", "probePurpose", "probeQuestion", "assumptions", "discoveredConventions"),
+                ["required"] = new JsonArray("responseKind", "messageText", "actionSummary", "transactionName", "generatedSource", "isUndoHostile", "capabilityBand", "riskLevel", "scopeSummary", "confidenceLevel", "evidenceSummary", "probePurpose", "probeQuestion", "assumptions"),
                 ["properties"] = new JsonObject
                 {
                     ["responseKind"] = new JsonObject
@@ -1139,28 +1140,6 @@ namespace RevitAgenticAICompanion.Runtime
                             ["type"] = "string",
                         },
                     },
-                    ["discoveredConventions"] = new JsonObject
-                    {
-                        ["type"] = "array",
-                        ["items"] = new JsonObject
-                        {
-                            ["type"] = "object",
-                            ["additionalProperties"] = false,
-                            ["required"] = new JsonArray("conventionType", "name", "value", "confidenceLevel", "rationale"),
-                            ["properties"] = new JsonObject
-                            {
-                                ["conventionType"] = new JsonObject { ["type"] = "string" },
-                                ["name"] = new JsonObject { ["type"] = "string" },
-                                ["value"] = new JsonObject { ["type"] = "string" },
-                                ["confidenceLevel"] = new JsonObject
-                                {
-                                    ["type"] = "string",
-                                    ["enum"] = new JsonArray("low", "medium", "high"),
-                                },
-                                ["rationale"] = new JsonObject { ["type"] = "string" },
-                            },
-                        },
-                    },
                 },
             };
         }
@@ -1174,12 +1153,11 @@ namespace RevitAgenticAICompanion.Runtime
                     payload?.MessageText ?? string.Empty,
                     payload?.CapabilityBand ?? "reply",
                     payload?.RiskLevel ?? "low",
-                    payload?.ScopeSummary ?? string.Empty,
-                    payload?.ConfidenceLevel ?? "low",
-                    payload?.Assumptions ?? Array.Empty<string>(),
-                    ToConventionRecords(payload?.DiscoveredConventions),
-                    new ProposalProvenance("Codex", repairCount));
-            }
+                payload?.ScopeSummary ?? string.Empty,
+                payload?.ConfidenceLevel ?? "low",
+                payload?.Assumptions ?? Array.Empty<string>(),
+                new ProposalProvenance("Codex", repairCount));
+        }
 
             if (string.IsNullOrWhiteSpace(payload?.GeneratedSource))
             {
@@ -1202,7 +1180,6 @@ namespace RevitAgenticAICompanion.Runtime
                     payload.ProbePurpose,
                     payload.ProbeQuestion,
                     payload.Assumptions ?? Array.Empty<string>(),
-                    ToConventionRecords(payload.DiscoveredConventions),
                     new ProposalProvenance("Codex", repairCount));
             }
 
@@ -1220,7 +1197,6 @@ namespace RevitAgenticAICompanion.Runtime
                     payload.ConfidenceLevel,
                     payload.EvidenceSummary,
                     payload.Assumptions ?? Array.Empty<string>(),
-                    ToConventionRecords(payload.DiscoveredConventions),
                     new ProposalProvenance("Codex", repairCount));
             }
 
@@ -1239,7 +1215,6 @@ namespace RevitAgenticAICompanion.Runtime
                 payload.ConfidenceLevel,
                 payload.EvidenceSummary,
                 payload.Assumptions ?? Array.Empty<string>(),
-                ToConventionRecords(payload.DiscoveredConventions),
                 new ProposalProvenance("Codex", repairCount));
         }
 
@@ -1270,25 +1245,6 @@ namespace RevitAgenticAICompanion.Runtime
         private static bool RequiresGeneratedCode(CodexPlanningPayload payload)
         {
             return IsInspectionProbe(payload) || IsReadOnlyQuery(payload) || IsActionProposal(payload);
-        }
-
-        private static ProjectConventionRecord[] ToConventionRecords(IReadOnlyList<CodexConventionPayload> payloads)
-        {
-            if (payloads == null || payloads.Count == 0)
-            {
-                return Array.Empty<ProjectConventionRecord>();
-            }
-
-            return payloads
-                .Where(payload => payload != null)
-                .Select(payload => new ProjectConventionRecord(
-                    payload.ConventionType,
-                    payload.Name,
-                    payload.Value,
-                    payload.ConfidenceLevel,
-                    payload.Rationale,
-                    "Codex"))
-                .ToArray();
         }
 
         private static JsonNode GetProperty(JsonNode node, string propertyName)
@@ -1424,16 +1380,6 @@ namespace RevitAgenticAICompanion.Runtime
             public string ProbePurpose { get; set; }
             public string ProbeQuestion { get; set; }
             public string[] Assumptions { get; set; }
-            public CodexConventionPayload[] DiscoveredConventions { get; set; }
-        }
-
-        private sealed class CodexConventionPayload
-        {
-            public string ConventionType { get; set; }
-            public string Name { get; set; }
-            public string Value { get; set; }
-            public string ConfidenceLevel { get; set; }
-            public string Rationale { get; set; }
         }
 
         private sealed class CodexCliResult

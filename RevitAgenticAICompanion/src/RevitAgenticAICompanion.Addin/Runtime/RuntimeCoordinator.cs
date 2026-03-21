@@ -23,7 +23,7 @@ namespace RevitAgenticAICompanion.Runtime
         private readonly GeneratedActionExecutor _executor;
         private readonly ArtifactStore _artifactStore;
         private readonly AuditStore _auditStore;
-        private readonly ProjectMemoryStore _projectMemoryStore;
+        private readonly UserMemoryStore _userMemoryStore;
         private static readonly TimeSpan PlanningBudget = TimeSpan.FromMinutes(8);
         private const int MaxInspectionProbes = 3;
 
@@ -36,7 +36,7 @@ namespace RevitAgenticAICompanion.Runtime
             GeneratedActionExecutor executor,
             ArtifactStore artifactStore,
             AuditStore auditStore,
-            ProjectMemoryStore projectMemoryStore)
+            UserMemoryStore userMemoryStore)
         {
             _dispatcher = dispatcher;
             _documentStateTracker = documentStateTracker;
@@ -46,7 +46,7 @@ namespace RevitAgenticAICompanion.Runtime
             _executor = executor;
             _artifactStore = artifactStore;
             _auditStore = auditStore;
-            _projectMemoryStore = projectMemoryStore;
+            _userMemoryStore = userMemoryStore;
         }
 
         public PlanningSession CurrentSession { get; private set; }
@@ -69,11 +69,11 @@ namespace RevitAgenticAICompanion.Runtime
             }
 
             var snapshot = await _dispatcher.Enqueue(new CaptureContextSnapshotRequest(_documentStateTracker));
-            var conventions = _projectMemoryStore.GetConventions(snapshot);
+            var userPreferences = _userMemoryStore.GetPreferences();
             var planningRequest = new PlanningRequest(
                 prompt,
                 snapshot,
-                projectConventions: conventions,
+                userPreferences: userPreferences,
                 maxProbeCount: MaxInspectionProbes);
             var planningStopwatch = Stopwatch.StartNew();
 
@@ -89,17 +89,15 @@ namespace RevitAgenticAICompanion.Runtime
                         "Planning paused after bounded inspection.",
                         "low",
                         Array.Empty<string>(),
-                        conventions,
                         new ProposalProvenance("Host timeout", 0));
-                    CurrentSession = BuildSession(snapshot, planningRequest, conventions, timeoutProposal, new ValidationReport(), GeneratedActionCompilationResult.NotApplicable());
+                    CurrentSession = BuildSession(snapshot, planningRequest, timeoutProposal, new ValidationReport(), GeneratedActionCompilationResult.NotApplicable());
+                    UpdateUserMemory(CurrentSession, null);
                     _auditStore.WritePlanning(CurrentSession);
                     return CurrentSession;
                 }
 
                 var proposal = await _agentRuntimeClient.CreateProposalAsync(planningRequest, cancellationToken);
                 proposal.SourceHash = ComputeSourceHash(proposal.GeneratedSource);
-                PersistDiscoveredConventions(snapshot, proposal);
-                conventions = _projectMemoryStore.GetConventions(snapshot);
 
                 var validation = new ValidationReport();
                 var compilation = GeneratedActionCompilationResult.NotApplicable();
@@ -112,8 +110,6 @@ namespace RevitAgenticAICompanion.Runtime
                     {
                         proposal = await _agentRuntimeClient.RepairProposalAsync(planningRequest, proposal, compilation, cancellationToken);
                         proposal.SourceHash = ComputeSourceHash(proposal.GeneratedSource);
-                        PersistDiscoveredConventions(snapshot, proposal);
-                        conventions = _projectMemoryStore.GetConventions(snapshot);
                         validation = _validator.Validate(proposal);
                         validation.IsUndoHostile |= proposal.IsUndoHostile;
                         compilation = proposal.RequiresCompilation
@@ -128,7 +124,7 @@ namespace RevitAgenticAICompanion.Runtime
                 }
 
                 proposal.ArtifactDirectory = _artifactStore.WriteProposal(snapshot, planningRequest, proposal, validation, compilation);
-                var session = BuildSession(snapshot, planningRequest, conventions, proposal, validation, compilation);
+                var session = BuildSession(snapshot, planningRequest, proposal, validation, compilation);
 
                 if (proposal.ContinuesPlanning)
                 {
@@ -142,9 +138,9 @@ namespace RevitAgenticAICompanion.Runtime
                             "Planning paused after bounded inspection.",
                             "low",
                             Array.Empty<string>(),
-                            conventions,
                             new ProposalProvenance("Host probe limit", proposal.Provenance?.RepairCount ?? 0));
-                        CurrentSession = BuildSession(snapshot, planningRequest, conventions, probeLimitProposal, new ValidationReport(), GeneratedActionCompilationResult.NotApplicable());
+                        CurrentSession = BuildSession(snapshot, planningRequest, probeLimitProposal, new ValidationReport(), GeneratedActionCompilationResult.NotApplicable());
+                        UpdateUserMemory(CurrentSession, null);
                         _auditStore.WritePlanning(CurrentSession);
                         return CurrentSession;
                     }
@@ -177,7 +173,7 @@ namespace RevitAgenticAICompanion.Runtime
                         probeExecution.ChangedElementIds,
                         proposal.SourceHash,
                         proposal.ArtifactDirectory);
-                    planningRequest = planningRequest.WithEvidence(evidence, conventions);
+                    planningRequest = planningRequest.WithEvidence(evidence, userPreferences);
                     continue;
                 }
 
@@ -199,6 +195,7 @@ namespace RevitAgenticAICompanion.Runtime
                     }
                 }
 
+                UpdateUserMemory(CurrentSession, CurrentSession.ExecutionResult);
                 _auditStore.WritePlanning(CurrentSession);
                 if (CurrentSession.ExecutionResult != null)
                 {
@@ -272,6 +269,7 @@ namespace RevitAgenticAICompanion.Runtime
 
             var result = await _dispatcher.Enqueue(new ExecuteGeneratedProposalRequest(CurrentSession, _executor));
             CurrentSession.ExecutionResult = result;
+            UpdateUserMemory(CurrentSession, result);
             _artifactStore.WriteExecution(CurrentSession, result);
             _auditStore.WriteExecution(CurrentSession, result);
             return result;
@@ -280,7 +278,6 @@ namespace RevitAgenticAICompanion.Runtime
         private PlanningSession BuildSession(
             RevitContextSnapshot snapshot,
             PlanningRequest planningRequest,
-            IReadOnlyList<ProjectConventionRecord> conventions,
             ProposalCandidate proposal,
             ValidationReport validation,
             GeneratedActionCompilationResult compilation)
@@ -291,17 +288,7 @@ namespace RevitAgenticAICompanion.Runtime
                 compilation,
                 snapshot,
                 planningRequest?.RetrievedEvidence ?? Array.Empty<ProbeEvidence>(),
-                conventions ?? Array.Empty<ProjectConventionRecord>());
-        }
-
-        private void PersistDiscoveredConventions(RevitContextSnapshot snapshot, ProposalCandidate proposal)
-        {
-            if (proposal?.DiscoveredConventions == null || proposal.DiscoveredConventions.Count == 0)
-            {
-                return;
-            }
-
-            _projectMemoryStore.UpsertConventions(snapshot, proposal.DiscoveredConventions, proposal.ProposalId);
+                planningRequest?.UserPreferences ?? Array.Empty<UserPreferenceRecord>());
         }
 
         private static string BuildBudgetExceededMessage(PlanningRequest request, TimeSpan elapsed)
@@ -327,6 +314,16 @@ namespace RevitAgenticAICompanion.Runtime
                 " read-only inspection steps. Evidence gathered: " +
                 string.Join(" | ", evidenceLines) +
                 ". Clarify the target or ask me to continue with these assumptions.";
+        }
+
+        private void UpdateUserMemory(PlanningSession session, ProposalExecutionResult execution)
+        {
+            if (session == null)
+            {
+                return;
+            }
+
+            _userMemoryStore.UpdateFromTurn(session.Proposal?.UserPrompt, session.Proposal, execution);
         }
 
         private static string ComputeSourceHash(string source)
