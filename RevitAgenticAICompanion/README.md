@@ -43,9 +43,50 @@ The current memory model is intentionally small:
 
 ## Build
 
+Build the add-in from the project root:
+
+```powershell
+dotnet build .\src\RevitAgenticAICompanion.Addin\RevitAgenticAICompanion.Addin.csproj -c Release -p:Platform=x64
+```
+
+The compiled output lands under:
+
+- `src/RevitAgenticAICompanion.Addin/bin/Release/`
+
+The active packaged payload used for local testing currently lives under:
+
+- `deploy/UserMemoryMd_2026-03-20/`
+
 ## Install
 
+The repo includes a packaged installer snapshot:
+
+- `deploy/Installer_2026-03-21/`
+
+Run the installer script:
+
+```powershell
+.\deploy\Installer_2026-03-21\install.ps1
+```
+
+What it does:
+
+- copies the packaged payload into `%LOCALAPPDATA%\RevitAgenticAICompanion\install\...`
+- writes the Revit 2026 manifest into `%APPDATA%\Autodesk\Revit\Addins\2026\`
+- seeds `memory.md`
+- seeds an empty `project-threads.json` if missing
+
+Useful options:
+
+- `-ForceSeed` overwrites the seeded `memory.md`
+- `-ResetThreads` clears stored project thread continuity
+
 ## Repo layout
+
+- `src/RevitAgenticAICompanion.Addin/` - Revit add-in source, runtime, UI, storage, and request handlers
+- `deploy/` - frozen deploy snapshots, installers, and milestone payloads
+- `docs/` - screenshots and lightweight project notes
+- `docs/test-runs/` - captured screenshots from test sessions
 
 ## Notes
 

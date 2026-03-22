@@ -206,6 +206,8 @@ namespace RevitAgenticAICompanion.Runtime
             bool useOutputSchema,
             CancellationToken cancellationToken)
         {
+            // Thread continuity is scoped per project key so follow-up prompts stay local to the
+            // active Revit document instead of sharing one global Codex conversation.
             var projectKey = ProjectKeyBuilder.FromSnapshot(snapshot);
             var storedThreadId = _threadStore.GetThreadId(projectKey);
 
@@ -243,6 +245,8 @@ namespace RevitAgenticAICompanion.Runtime
             args.Append("exec ");
             if (isResume)
             {
+                // Resume reuses Codex's own short-term thread memory; fresh turns get the host's
+                // explicit planning prompt plus the JSON schema contract.
                 args.Append("resume ");
                 args.Append(threadId);
                 args.Append(' ');
@@ -319,6 +323,8 @@ namespace RevitAgenticAICompanion.Runtime
             {
                 try
                 {
+                    // The CLI expects the prompt as a real stdin line; without the newline flush it
+                    // can exit early and look like a transport failure.
                     await process.StandardInput.WriteLineAsync(standardInput);
                     await process.StandardInput.FlushAsync();
                 }
@@ -1099,6 +1105,8 @@ namespace RevitAgenticAICompanion.Runtime
             ExecutionFailurePacket failurePacket)
         {
             var builder = new StringBuilder();
+            // Failure analysis intentionally forbids another free-form probe loop. Codex must either
+            // explain the failure or propose one bounded repair from the packet the host captured.
             builder.AppendLine("Analyze a failed Revit execution and decide the next safe step.");
             builder.AppendLine("Return JSON only and obey the provided output schema.");
             builder.AppendLine("Allowed response kinds for this failure-analysis turn:");
