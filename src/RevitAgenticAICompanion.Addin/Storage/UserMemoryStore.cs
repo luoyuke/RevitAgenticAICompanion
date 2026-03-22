@@ -35,6 +35,8 @@ namespace RevitAgenticAICompanion.Storage
             lock (_gate)
             {
                 EnsureLoaded();
+                // Prompts always receive preferences in a stable order so the injected context
+                // stays small and predictable even when the markdown file is hand-edited.
                 return OrderedKeys
                     .Select(key => _entries.TryGetValue(key, out var record) ? record : null)
                     .Where(record => record != null)
@@ -184,6 +186,8 @@ namespace RevitAgenticAICompanion.Storage
 
         private static bool HasMemoryIntent(string text)
         {
+            // Strict mode: preferences only persist when the user clearly frames them as
+            // something to remember, keep as a default, or use from now on.
             if (ContainsAny(text, "remember", "store this", "save this", "save that", "keep this", "keep that", "by default", "default", "preference", "preferences"))
             {
                 return true;
@@ -252,6 +256,7 @@ namespace RevitAgenticAICompanion.Storage
                 var line = rawLine?.Trim() ?? string.Empty;
                 if (line.StartsWith("### ", StringComparison.Ordinal))
                 {
+                    // Only allowlisted section headings become durable memory entries.
                     var key = NormalizeKey(line.Substring(4).Trim());
                     current = AllowedKeys.Contains(key)
                         ? new UserPreferenceRecord(key, string.Empty, string.Empty, string.Empty, DateTimeOffset.MinValue)
@@ -331,6 +336,8 @@ namespace RevitAgenticAICompanion.Storage
             Directory.CreateDirectory(Path.GetDirectoryName(_path) ?? string.Empty);
 
             var builder = new StringBuilder();
+            // The file is intentionally tiny and human-editable so preference state can be
+            // inspected or reset without touching the audit ledger.
             builder.AppendLine("# Revit Agentic AI Companion User Memory");
             builder.AppendLine();
             builder.AppendLine("## Rules");

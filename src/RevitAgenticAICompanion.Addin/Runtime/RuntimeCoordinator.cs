@@ -79,6 +79,8 @@ namespace RevitAgenticAICompanion.Runtime
 
             while (true)
             {
+                // The host owns the outer loop so Codex can inspect in bounded steps without
+                // getting stuck in an unbounded "probe forever" cycle.
                 if (planningStopwatch.Elapsed >= PlanningBudget)
                 {
                     var timeoutProposal = ProposalCandidate.CreateReply(
@@ -164,6 +166,7 @@ namespace RevitAgenticAICompanion.Runtime
                         return CurrentSession;
                     }
 
+                    // Probe output becomes authoritative turn-local evidence for the next Codex step.
                     var evidence = new ProbeEvidence(
                         proposal.ProposalId,
                         planningRequest.CompletedProbeCount + 1,
@@ -264,6 +267,8 @@ namespace RevitAgenticAICompanion.Runtime
 
             try
             {
+                // Failed writes are never retried blindly. Codex gets a compact failure packet and
+                // may return either an explanation or a fresh proposal that must pass approval again.
                 var analysisSession = await AnalyzeFailureAsync(failedSession, failurePacket);
                 if (analysisSession != null)
                 {
@@ -340,6 +345,8 @@ namespace RevitAgenticAICompanion.Runtime
                 return;
             }
 
+            // Read-only queries execute immediately after planning; write actions stop at preview
+            // until the user explicitly approves them.
             if (session.Proposal.RequiresCompilation && session.ValidationReport.IsValid && session.CompilationResult.IsSuccess)
             {
                 if (session.Proposal.ExecutesReadOnly)
@@ -408,6 +415,8 @@ namespace RevitAgenticAICompanion.Runtime
 
         private async Task<PlanningSession> AnalyzeFailureAsync(PlanningSession failedSession, ExecutionFailurePacket failurePacket)
         {
+            // Failure analysis reuses the same prompt, snapshot, evidence, and user preferences so
+            // Codex repairs the exact plan that failed, not a reconstructed approximation.
             var planningRequest = new PlanningRequest(
                 failedSession.Proposal?.UserPrompt,
                 failedSession.ContextSnapshot,
