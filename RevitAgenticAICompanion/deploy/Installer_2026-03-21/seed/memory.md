@@ -39,3 +39,10 @@
 - confidence: high
 - source: explicit user statement
 - last_updated_utc: 2026-03-21T00:10:00Z
+
+### routing_generation_mode
+
+- value: placeholders_only
+- confidence: high
+- source: explicit user statement
+- last_updated_utc: 2026-03-22T12:00:00Z

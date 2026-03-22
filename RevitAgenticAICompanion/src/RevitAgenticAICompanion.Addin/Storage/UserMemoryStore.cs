@@ -15,6 +15,7 @@ namespace RevitAgenticAICompanion.Storage
             "explanation_style",
             "approval_style",
             "inspection_bias",
+            "routing_generation_mode",
         };
 
         private static readonly HashSet<string> AllowedKeys = new HashSet<string>(OrderedKeys, StringComparer.OrdinalIgnoreCase);
@@ -74,6 +75,7 @@ namespace RevitAgenticAICompanion.Storage
             AddIfDetected(updates, DetectExplanationStyle(text));
             AddIfDetected(updates, DetectApprovalStyle(text));
             AddIfDetected(updates, DetectInspectionBias(text));
+            AddIfDetected(updates, DetectRoutingGenerationMode(text));
             return updates;
         }
 
@@ -165,6 +167,21 @@ namespace RevitAgenticAICompanion.Storage
             return null;
         }
 
+        private static UserPreferenceRecord DetectRoutingGenerationMode(string text)
+        {
+            if (!ContainsAny(text, "pipe", "pipework", "piping", "duct", "ductwork", "routing", "route", "layout"))
+            {
+                return null;
+            }
+
+            if (ContainsAny(text, "placeholder", "placeholders"))
+            {
+                return CreateRecord("routing_generation_mode", "placeholders_only");
+            }
+
+            return null;
+        }
+
         private static bool HasMemoryIntent(string text)
         {
             if (ContainsAny(text, "remember", "store this", "save this", "save that", "keep this", "keep that", "by default", "default", "preference", "preferences"))
@@ -179,7 +196,7 @@ namespace RevitAgenticAICompanion.Storage
             }
 
             if (ContainsAny(text, "from now on") &&
-                ContainsAny(text, "language", "reply", "approval", "inspect", "explain", "style"))
+                ContainsAny(text, "language", "reply", "approval", "inspect", "explain", "style", "pipe", "pipework", "duct", "ductwork", "routing", "placeholder"))
             {
                 return true;
             }
