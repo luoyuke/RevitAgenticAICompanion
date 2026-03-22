@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <RevitAddIns>
+  <!-- Development manifest template. Replace the Assembly path with a local build or installed payload path before use. -->
   <AddIn Type="Application">
     <Name>Revit Agentic AI Companion</Name>
-    <Assembly>C:\Users\luoyu\Documents\Codex\RevitAgenticAICompanion\deploy\StructuredMessageFix\RevitAgenticAICompanion.Addin.dll</Assembly>
+    <Assembly>C:\Path\To\RevitAgenticAICompanion.Addin.dll</Assembly>
     <AddInId>8B40A927-3228-40D4-A51A-5CD14E6A1001</AddInId>
     <FullClassName>RevitAgenticAICompanion.App</FullClassName>
     <VendorId>CODEX</VendorId>
@@ -10,7 +11,7 @@
   </AddIn>
   <AddIn Type="Command">
     <Name>Show Revit Agentic AI Companion</Name>
-    <Assembly>C:\Users\luoyu\Documents\Codex\RevitAgenticAICompanion\deploy\StructuredMessageFix\RevitAgenticAICompanion.Addin.dll</Assembly>
+    <Assembly>C:\Path\To\RevitAgenticAICompanion.Addin.dll</Assembly>
     <AddInId>8B40A927-3228-40D4-A51A-5CD14E6A1002</AddInId>
     <FullClassName>RevitAgenticAICompanion.Commands.ShowChatCommand</FullClassName>
     <Text>AI Companion</Text>

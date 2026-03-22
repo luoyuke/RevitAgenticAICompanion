@@ -1,8 +1,10 @@
 # Revit Agentic AI Companion
 
-Revit Agentic AI Companion is a Revit 2026 add-in that combines a dockable chat pane with bounded Revit execution. It lets Codex inspect the live model, propose generated C# actions, and execute approved edits through host-owned Revit requests.
+Revit Agentic AI Companion is a hobby Revit 2026 add-in that lets you talk to your model like it’s a coworker… except this coworker can write code, run transactions, and occasionally make questionable life choices.It is a dockable chat pane with bounded Revit execution. It lets Codex inspect the live model, propose generated C# actions, and execute approved edits through host-owned Revit requests.
 
-The project is past the first proof-of-concept stage. It now supports multi-step inspection-first planning, read-only BIM queries, bounded write proposals, preview and approval before writes, and local audit/artifact review after each run.
+It’s past proof-of-concept and already does real work — but it’s still very much an experiment. It now supports multi-step inspection-first planning, read-only BIM queries, bounded write proposals, preview and approval before writes, and local audit/artifact review after each run.
+
+If your model gets nuked, tell me so I can also laugh about it.
 
 ## What it can do
 
@@ -39,44 +41,23 @@ The current memory model is intentionally small:
 - `memory.md` for cross-project user preferences only
 - `audit.db` as a ledger, not retrieval memory
 
-Local runtime state lives under:
-
-- `C:\Users\luoyu\AppData\Local\RevitAgenticAICompanion`
-
 ## Build
-
-```powershell
-dotnet build C:\Users\luoyu\Documents\Codex\RevitAgenticAICompanion\src\RevitAgenticAICompanion.Addin\RevitAgenticAICompanion.Addin.csproj -c Release -p:Platform=x64
-```
 
 ## Install
 
-Packaged installer:
-
-- `C:\Users\luoyu\Documents\Codex\RevitAgenticAICompanion\deploy\Installer_2026-03-21`
-- `C:\Users\luoyu\Documents\Codex\RevitAgenticAICompanion\deploy\Installer_2026-03-21.zip`
-
-Run:
-
-```powershell
-C:\Users\luoyu\Documents\Codex\RevitAgenticAICompanion\deploy\Installer_2026-03-21\install.ps1
-```
-
-The installer copies the active payload, writes the Revit manifest, seeds `memory.md`, and can optionally reset project thread continuity.
-
 ## Repo layout
-
-- `src/RevitAgenticAICompanion.Addin/` - add-in code
-- `docs/` - architecture and workflow notes
-- `deploy/` - deploy snapshots and installer packages
 
 ## Notes
 
 - project-specific memory is intentionally disabled for now
+- hopping between unsaved documents can still leak conversational context if Revit documents share the same title, because thread continuity falls back to the document title when no file path exists
 - failures are expected during exploration; the runtime is built to keep them reviewable
 - artifact folders are the best place to inspect a single run in detail
 
-More architecture detail is in:
-
-- `docs/runtime-architecture.md`
-- `docs/workflow-notes.md`
+Why this exists
+Originally this started as:
+- “How badly can an agentic AI mess up a Revit model?”
+Turns out…  
+it can do some genuinely useful BIM work and might refuse your task due to your bad engineering practices.  
+So now it’s both:
+a chaos experiment and a glimpse of what future BIM workflows might look like
