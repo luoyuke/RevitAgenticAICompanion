@@ -6,6 +6,16 @@ It’s past proof-of-concept and already does real work — but it’s still ver
 
 If your model gets nuked, tell me so I can also laugh about it.
 
+## Prerequisites
+
+Before the add-in can do anything useful, you need:
+
+- Autodesk Revit 2026
+- Codex CLI installed on the machine
+- a ChatGPT or OpenAI account that can sign in through `codex login`
+
+The add-in does not ship its own model access. It checks the local Codex CLI session with `codex login status`, and if needed starts the browser sign-in flow with `codex login`.
+
 ## What it can do
 
 - answer conversational prompts inside Revit
