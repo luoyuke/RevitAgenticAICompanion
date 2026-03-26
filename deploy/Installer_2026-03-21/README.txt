@@ -30,6 +30,10 @@ Notes:
 - Close Revit before uninstalling.
 - The installer seeds memory.md and project-threads.json only when needed,
   unless you explicitly force/reset them.
+- After install, user memory is edited explicitly with:
+  - /memory
+  - /memory <key> <value>
+  - /memory clear <key>
 
 Useful install flags:
 

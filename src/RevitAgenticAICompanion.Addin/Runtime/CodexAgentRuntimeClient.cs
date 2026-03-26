@@ -994,7 +994,6 @@ namespace RevitAgenticAICompanion.Runtime
             builder.AppendLine("- Assumptions must list any unverified mapping or convention guess that affects the answer or write plan.");
             builder.AppendLine("- User preferences can shape language, explanation depth, approval style, and inspection bias, but they must not choose project targets or conventions.");
             builder.AppendLine("- Current prompt overrides user preferences. Live BIM evidence overrides user preferences when they conflict.");
-            builder.AppendLine("- If user preference routing_generation_mode = placeholders_only, then for new pipework or ductwork layout generation prefer pipe placeholders or duct placeholders instead of real pipes or ducts, unless the current prompt explicitly asks for real elements or conversion of existing placeholders.");
             builder.AppendLine("- If you can answer conversationally without model mutation, prefer reply_only.");
             builder.AppendLine();
             builder.AppendLine("Prompt:");

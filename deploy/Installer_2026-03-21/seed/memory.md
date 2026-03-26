@@ -6,7 +6,8 @@
 - No project-specific conventions
 - No audit history
 - No session transcript
-- Evaluate for update after every completed reply
+- Read automatically on every prompt
+- Update only with explicit /memory commands
 - When in doubt, do not write it
 - Delete or edit by hand if needed
 
@@ -40,9 +41,3 @@
 - source: explicit user statement
 - last_updated_utc: 2026-03-21T00:10:00Z
 
-### routing_generation_mode
-
-- value: placeholders_only
-- confidence: high
-- source: explicit user statement
-- last_updated_utc: 2026-03-22T12:00:00Z

@@ -26,6 +26,7 @@ namespace RevitAgenticAICompanion.Runtime
         private readonly UserMemoryStore _userMemoryStore;
         private static readonly TimeSpan PlanningBudget = TimeSpan.FromMinutes(8);
         private const int MaxInspectionProbes = 3;
+        private const string MemoryCommandPrefix = "/memory";
 
         public RuntimeCoordinator(
             RevitRequestDispatcher dispatcher,
@@ -69,6 +70,14 @@ namespace RevitAgenticAICompanion.Runtime
             }
 
             var snapshot = await _dispatcher.Enqueue(new CaptureContextSnapshotRequest(_documentStateTracker));
+            var memorySession = TryHandleMemoryCommand(prompt, snapshot);
+            if (memorySession != null)
+            {
+                CurrentSession = memorySession;
+                _auditStore.WritePlanning(CurrentSession);
+                return CurrentSession;
+            }
+
             var userPreferences = _userMemoryStore.GetPreferences();
             var planningRequest = new PlanningRequest(
                 prompt,
@@ -93,7 +102,6 @@ namespace RevitAgenticAICompanion.Runtime
                         Array.Empty<string>(),
                         new ProposalProvenance("Host timeout", 0));
                     CurrentSession = BuildSession(snapshot, planningRequest, timeoutProposal, new ValidationReport(), GeneratedActionCompilationResult.NotApplicable());
-                    UpdateUserMemory(CurrentSession, null);
                     _auditStore.WritePlanning(CurrentSession);
                     return CurrentSession;
                 }
@@ -142,7 +150,6 @@ namespace RevitAgenticAICompanion.Runtime
                             Array.Empty<string>(),
                             new ProposalProvenance("Host probe limit", proposal.Provenance?.RepairCount ?? 0));
                         CurrentSession = BuildSession(snapshot, planningRequest, probeLimitProposal, new ValidationReport(), GeneratedActionCompilationResult.NotApplicable());
-                        UpdateUserMemory(CurrentSession, null);
                         _auditStore.WritePlanning(CurrentSession);
                         return CurrentSession;
                     }
@@ -252,7 +259,6 @@ namespace RevitAgenticAICompanion.Runtime
             CurrentSession.ExecutionResult = result;
             if (result.IsSuccess)
             {
-                UpdateUserMemory(CurrentSession, result);
                 _artifactStore.WriteExecution(CurrentSession, result);
                 _auditStore.WriteExecution(CurrentSession, result);
                 return result;
@@ -328,14 +334,112 @@ namespace RevitAgenticAICompanion.Runtime
                 ". Clarify the target or ask me to continue with these assumptions.";
         }
 
-        private void UpdateUserMemory(PlanningSession session, ProposalExecutionResult execution)
+        private PlanningSession TryHandleMemoryCommand(string prompt, RevitContextSnapshot snapshot)
         {
-            if (session == null)
+            var trimmedPrompt = (prompt ?? string.Empty).Trim();
+            if (!trimmedPrompt.StartsWith(MemoryCommandPrefix, StringComparison.OrdinalIgnoreCase))
             {
-                return;
+                return null;
             }
 
-            _userMemoryStore.UpdateFromTurn(session.Proposal?.UserPrompt, session.Proposal, execution);
+            var remainder = trimmedPrompt.Substring(MemoryCommandPrefix.Length).Trim();
+            string replyText;
+
+            if (string.IsNullOrWhiteSpace(remainder))
+            {
+                replyText = BuildMemoryListReply();
+            }
+            else if (remainder.StartsWith("clear ", StringComparison.OrdinalIgnoreCase))
+            {
+                var key = remainder.Substring("clear ".Length).Trim();
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    replyText = BuildMemoryUsageReply();
+                }
+                else if (!_userMemoryStore.TryClearPreference(key, out var removed, out var clearError))
+                {
+                    replyText = clearError + Environment.NewLine + Environment.NewLine + BuildMemoryUsageReply();
+                }
+                else
+                {
+                    replyText = removed
+                        ? "Cleared " + key.Trim() + "."
+                        : key.Trim() + " was already empty.";
+                }
+            }
+            else
+            {
+                var firstSpace = remainder.IndexOf(' ');
+                if (firstSpace <= 0 || firstSpace == remainder.Length - 1)
+                {
+                    replyText = BuildMemoryUsageReply();
+                }
+                else
+                {
+                    var key = remainder.Substring(0, firstSpace).Trim();
+                    var value = remainder.Substring(firstSpace + 1).Trim();
+                    if (!_userMemoryStore.TrySetPreference(key, value, out var record, out var setError))
+                    {
+                        replyText = setError + Environment.NewLine + Environment.NewLine + BuildMemoryUsageReply();
+                    }
+                    else
+                    {
+                        replyText = "Saved " + record.Key + " = " + record.Value + ".";
+                    }
+                }
+            }
+
+            var planningRequest = new PlanningRequest(
+                prompt,
+                snapshot,
+                userPreferences: _userMemoryStore.GetPreferences(),
+                maxProbeCount: MaxInspectionProbes);
+            var proposal = ProposalCandidate.CreateReply(
+                prompt,
+                replyText,
+                "reply",
+                "low",
+                "Explicit user memory command.",
+                "high",
+                Array.Empty<string>(),
+                new ProposalProvenance("Host memory command", 0));
+            proposal.SourceHash = ComputeSourceHash(proposal.GeneratedSource);
+            var validation = new ValidationReport();
+            var compilation = GeneratedActionCompilationResult.NotApplicable();
+            proposal.ArtifactDirectory = _artifactStore.WriteProposal(snapshot, planningRequest, proposal, validation, compilation);
+            return BuildSession(snapshot, planningRequest, proposal, validation, compilation);
+        }
+
+        private string BuildMemoryListReply()
+        {
+            var preferences = _userMemoryStore.GetPreferences();
+            var builder = new StringBuilder();
+            builder.AppendLine("Current memory:");
+            if (preferences.Count == 0)
+            {
+                builder.AppendLine("- none");
+            }
+            else
+            {
+                foreach (var preference in preferences)
+                {
+                    builder.AppendLine("- " + preference.Key + " = " + preference.Value);
+                }
+            }
+
+            builder.AppendLine();
+            builder.AppendLine(BuildMemoryUsageReply());
+            return builder.ToString().Trim();
+        }
+
+        private string BuildMemoryUsageReply()
+        {
+            var allowedKeys = string.Join(", ", _userMemoryStore.GetAllowedKeys());
+            return "Usage:" + Environment.NewLine +
+                "/memory" + Environment.NewLine +
+                "/memory <key> <value>" + Environment.NewLine +
+                "/memory clear <key>" + Environment.NewLine +
+                "Allowed keys: " + allowedKeys;
         }
 
         private async Task FinalizeSessionAsync(PlanningSession session)
@@ -368,7 +472,6 @@ namespace RevitAgenticAICompanion.Runtime
                 }
             }
 
-            UpdateUserMemory(session, session.ExecutionResult);
             _auditStore.WritePlanning(session);
             if (session.ExecutionResult != null)
             {

@@ -51,6 +51,19 @@ The current memory model is intentionally small:
 - `memory.md` for cross-project user preferences only
 - `audit.db` as a ledger, not retrieval memory
 
+Memory is read automatically on every prompt and updated only with explicit commands:
+
+- `/memory`
+- `/memory <key> <value>`
+- `/memory clear <key>`
+
+Allowed keys:
+
+- `preferred_language`
+- `explanation_style`
+- `approval_style`
+- `inspection_bias`
+
 ## Build
 
 Build the add-in from the project root:

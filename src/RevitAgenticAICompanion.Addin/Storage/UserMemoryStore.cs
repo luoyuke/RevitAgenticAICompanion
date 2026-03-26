@@ -15,7 +15,6 @@ namespace RevitAgenticAICompanion.Storage
             "explanation_style",
             "approval_style",
             "inspection_bias",
-            "routing_generation_mode",
         };
 
         private static readonly HashSet<string> AllowedKeys = new HashSet<string>(OrderedKeys, StringComparer.OrdinalIgnoreCase);
@@ -35,8 +34,6 @@ namespace RevitAgenticAICompanion.Storage
             lock (_gate)
             {
                 EnsureLoaded();
-                // Prompts always receive preferences in a stable order so the injected context
-                // stays small and predictable even when the markdown file is hand-edited.
                 return OrderedKeys
                     .Select(key => _entries.TryGetValue(key, out var record) ? record : null)
                     .Where(record => record != null)
@@ -44,197 +41,73 @@ namespace RevitAgenticAICompanion.Storage
             }
         }
 
-        public void UpdateFromTurn(string userPrompt, ProposalCandidate proposal, ProposalExecutionResult execution)
+        public IReadOnlyList<string> GetAllowedKeys()
+        {
+            lock (_gate)
+            {
+                return OrderedKeys.ToArray();
+            }
+        }
+
+        public bool TrySetPreference(string key, string value, out UserPreferenceRecord record, out string error)
         {
             lock (_gate)
             {
                 EnsureLoaded();
-                var updates = DetectPreferences(userPrompt);
-                if (updates.Count == 0)
+
+                var normalizedKey = NormalizeKey(key);
+                if (!AllowedKeys.Contains(normalizedKey))
                 {
-                    return;
+                    record = null;
+                    error = "Unknown memory key: " + (key ?? string.Empty) + ".";
+                    return false;
                 }
 
-                foreach (var update in updates)
+                var normalizedValue = NormalizeValue(normalizedKey, value);
+                if (string.IsNullOrWhiteSpace(normalizedValue))
                 {
-                    _entries[update.Key] = update;
+                    record = null;
+                    error = "Memory value cannot be empty.";
+                    return false;
                 }
 
+                record = new UserPreferenceRecord(
+                    normalizedKey,
+                    normalizedValue,
+                    "high",
+                    "explicit slash command",
+                    DateTimeOffset.UtcNow);
+
+                _entries[normalizedKey] = record;
                 Save();
-            }
-        }
-
-        private static List<UserPreferenceRecord> DetectPreferences(string userPrompt)
-        {
-            var updates = new List<UserPreferenceRecord>();
-            var text = (userPrompt ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(text) || !HasMemoryIntent(text))
-            {
-                return updates;
-            }
-
-            AddIfDetected(updates, DetectPreferredLanguage(text));
-            AddIfDetected(updates, DetectExplanationStyle(text));
-            AddIfDetected(updates, DetectApprovalStyle(text));
-            AddIfDetected(updates, DetectInspectionBias(text));
-            AddIfDetected(updates, DetectRoutingGenerationMode(text));
-            return updates;
-        }
-
-        private static void AddIfDetected(List<UserPreferenceRecord> updates, UserPreferenceRecord candidate)
-        {
-            if (candidate != null)
-            {
-                updates.Add(candidate);
-            }
-        }
-
-        private static UserPreferenceRecord DetectPreferredLanguage(string text)
-        {
-            if (!ContainsAny(text, "language", "reply", "respond", "answer", "write", "speak"))
-            {
-                return null;
-            }
-
-            if (ContainsAny(text, "french", "francais", "français"))
-            {
-                return CreateRecord("preferred_language", "French");
-            }
-
-            if (ContainsAny(text, "english"))
-            {
-                return CreateRecord("preferred_language", "English");
-            }
-
-            if (ContainsAny(text, "german", "deutsch"))
-            {
-                return CreateRecord("preferred_language", "German");
-            }
-
-            if (ContainsAny(text, "chinese", "中文"))
-            {
-                return CreateRecord("preferred_language", "Chinese");
-            }
-
-            return null;
-        }
-
-        private static UserPreferenceRecord DetectExplanationStyle(string text)
-        {
-            if (!ContainsAny(text, "explain", "explanation", "reply", "response", "style", "concise", "brief", "detailed", "detail"))
-            {
-                return null;
-            }
-
-            if (ContainsAny(text, "concise", "brief", "short"))
-            {
-                return CreateRecord("explanation_style", "concise");
-            }
-
-            if (ContainsAny(text, "detailed", "more detail", "thorough", "go deeper"))
-            {
-                return CreateRecord("explanation_style", "detailed");
-            }
-
-            return null;
-        }
-
-        private static UserPreferenceRecord DetectApprovalStyle(string text)
-        {
-            if (!ContainsAny(text, "approval", "approve", "confirm", "write", "execute"))
-            {
-                return null;
-            }
-
-            if (ContainsAny(text, "explicit approval", "ask before write", "approval before write", "ask before executing", "confirm before write", "confirm before executing", "wait for approval"))
-            {
-                return CreateRecord("approval_style", "explicit before write");
-            }
-
-            return null;
-        }
-
-        private static UserPreferenceRecord DetectInspectionBias(string text)
-        {
-            if (!ContainsAny(text, "inspect", "guess", "ambiguous", "live project data", "evidence"))
-            {
-                return null;
-            }
-
-            if (ContainsAny(text, "inspect first", "inspection first", "do not guess", "don't guess", "inspect before write", "live project data", "evidence driven", "when ambiguous"))
-            {
-                return CreateRecord("inspection_bias", "inspect first when ambiguous");
-            }
-
-            return null;
-        }
-
-        private static UserPreferenceRecord DetectRoutingGenerationMode(string text)
-        {
-            if (!ContainsAny(text, "pipe", "pipework", "piping", "duct", "ductwork", "routing", "route", "layout"))
-            {
-                return null;
-            }
-
-            if (ContainsAny(text, "placeholder", "placeholders"))
-            {
-                return CreateRecord("routing_generation_mode", "placeholders_only");
-            }
-
-            return null;
-        }
-
-        private static bool HasMemoryIntent(string text)
-        {
-            // Strict mode: preferences only persist when the user clearly frames them as
-            // something to remember, keep as a default, or use from now on.
-            if (ContainsAny(text, "remember", "store this", "save this", "save that", "keep this", "keep that", "by default", "default", "preference", "preferences"))
-            {
+                error = string.Empty;
                 return true;
             }
-
-            if (ContainsAny(text, "set my", "set ma", "set the") &&
-                ContainsAny(text, "preference", "default"))
-            {
-                return true;
-            }
-
-            if (ContainsAny(text, "from now on") &&
-                ContainsAny(text, "language", "reply", "approval", "inspect", "explain", "style", "pipe", "pipework", "duct", "ductwork", "routing", "placeholder"))
-            {
-                return true;
-            }
-
-            return false;
         }
 
-        private static bool ContainsAny(string text, params string[] needles)
+        public bool TryClearPreference(string key, out bool removed, out string error)
         {
-            foreach (var needle in needles)
+            lock (_gate)
             {
-                if (!string.IsNullOrWhiteSpace(needle) &&
-                    text.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
+                EnsureLoaded();
+
+                var normalizedKey = NormalizeKey(key);
+                if (!AllowedKeys.Contains(normalizedKey))
                 {
-                    return true;
+                    removed = false;
+                    error = "Unknown memory key: " + (key ?? string.Empty) + ".";
+                    return false;
                 }
+
+                removed = _entries.Remove(normalizedKey);
+                if (removed)
+                {
+                    Save();
+                }
+
+                error = string.Empty;
+                return true;
             }
-
-            return false;
-        }
-
-        private static UserPreferenceRecord CreateRecord(string key, string value)
-        {
-            if (!AllowedKeys.Contains(key) || string.IsNullOrWhiteSpace(value))
-            {
-                return null;
-            }
-
-            return new UserPreferenceRecord(
-                key,
-                value,
-                "high",
-                "explicit user statement",
-                DateTimeOffset.UtcNow);
         }
 
         private void EnsureLoaded()
@@ -256,7 +129,6 @@ namespace RevitAgenticAICompanion.Storage
                 var line = rawLine?.Trim() ?? string.Empty;
                 if (line.StartsWith("### ", StringComparison.Ordinal))
                 {
-                    // Only allowlisted section headings become durable memory entries.
                     var key = NormalizeKey(line.Substring(4).Trim());
                     current = AllowedKeys.Contains(key)
                         ? new UserPreferenceRecord(key, string.Empty, string.Empty, string.Empty, DateTimeOffset.MinValue)
@@ -304,6 +176,47 @@ namespace RevitAgenticAICompanion.Storage
                 .Replace("\\_", "_");
         }
 
+        private static string NormalizeValue(string key, string value)
+        {
+            var normalizedValue = (value ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(normalizedValue))
+            {
+                return null;
+            }
+
+            switch (NormalizeKey(key))
+            {
+                case "preferred_language":
+                    if (string.Equals(normalizedValue, "english", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return "English";
+                    }
+
+                    if (string.Equals(normalizedValue, "french", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return "French";
+                    }
+
+                    if (string.Equals(normalizedValue, "german", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return "German";
+                    }
+
+                    if (string.Equals(normalizedValue, "chinese", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return "Chinese";
+                    }
+
+                    return normalizedValue;
+                case "explanation_style":
+                case "approval_style":
+                case "inspection_bias":
+                    return normalizedValue.ToLowerInvariant();
+                default:
+                    return normalizedValue;
+            }
+        }
+
         private static UserPreferenceRecord UpdateField(UserPreferenceRecord record, string field, string value)
         {
             switch ((field ?? string.Empty).ToLowerInvariant())
@@ -328,7 +241,7 @@ namespace RevitAgenticAICompanion.Storage
 
         private void Save()
         {
-            if (_entries == null || _entries.Count == 0)
+            if (_entries == null)
             {
                 return;
             }
@@ -336,8 +249,6 @@ namespace RevitAgenticAICompanion.Storage
             Directory.CreateDirectory(Path.GetDirectoryName(_path) ?? string.Empty);
 
             var builder = new StringBuilder();
-            // The file is intentionally tiny and human-editable so preference state can be
-            // inspected or reset without touching the audit ledger.
             builder.AppendLine("# Revit Agentic AI Companion User Memory");
             builder.AppendLine();
             builder.AppendLine("## Rules");
@@ -345,7 +256,8 @@ namespace RevitAgenticAICompanion.Storage
             builder.AppendLine("- No project-specific conventions");
             builder.AppendLine("- No audit history");
             builder.AppendLine("- No session transcript");
-            builder.AppendLine("- Evaluate for update after every completed reply");
+            builder.AppendLine("- Read automatically on every prompt");
+            builder.AppendLine("- Update only with explicit /memory commands");
             builder.AppendLine("- When in doubt, do not write it");
             builder.AppendLine("- Delete or edit by hand if needed");
             builder.AppendLine();
