@@ -36,7 +36,7 @@ namespace RevitAgenticAICompanion.Storage
     selected_element_ids_json, selected_category_names_json, available_category_count,
     validation_is_valid, compilation_is_success, undo_hostile, is_approved,
     preview_is_success, preview_summary, preview_target_element_ids_json, preview_error,
-    transaction_names_json, assumptions_json, probe_count, probe_evidence_json, project_conventions_json, discovered_conventions_json, diagnostics_json)
+    transaction_names_json, assumptions_json, probe_count, semantic_probe_count, visual_probe_count, probe_evidence_json, project_conventions_json, discovered_conventions_json, diagnostics_json)
 VALUES (
     $run_id, COALESCE((SELECT created_utc FROM audit_runs WHERE run_id = $run_id), $now), $now,
     $proposal_kind, $planner_name, $repair_count,
@@ -45,7 +45,7 @@ VALUES (
     $selected_element_ids_json, $selected_category_names_json, $available_category_count,
     $validation_is_valid, $compilation_is_success, $undo_hostile, $is_approved,
     $preview_is_success, $preview_summary, $preview_target_element_ids_json, $preview_error,
-    $transaction_names_json, $assumptions_json, $probe_count, $probe_evidence_json, $project_conventions_json, $discovered_conventions_json, $diagnostics_json)
+    $transaction_names_json, $assumptions_json, $probe_count, $semantic_probe_count, $visual_probe_count, $probe_evidence_json, $project_conventions_json, $discovered_conventions_json, $diagnostics_json)
 ON CONFLICT(run_id) DO UPDATE SET
     updated_utc = excluded.updated_utc,
     proposal_kind = excluded.proposal_kind,
@@ -79,6 +79,8 @@ ON CONFLICT(run_id) DO UPDATE SET
     transaction_names_json = excluded.transaction_names_json,
     assumptions_json = excluded.assumptions_json,
     probe_count = excluded.probe_count,
+    semantic_probe_count = excluded.semantic_probe_count,
+    visual_probe_count = excluded.visual_probe_count,
     probe_evidence_json = excluded.probe_evidence_json,
     project_conventions_json = excluded.project_conventions_json,
     discovered_conventions_json = excluded.discovered_conventions_json,
@@ -205,6 +207,8 @@ WHERE run_id = $run_id;";
     transaction_names_json TEXT NOT NULL,
     assumptions_json TEXT NOT NULL DEFAULT '[]',
     probe_count INTEGER NOT NULL DEFAULT 0,
+    semantic_probe_count INTEGER NOT NULL DEFAULT 0,
+    visual_probe_count INTEGER NOT NULL DEFAULT 0,
     probe_evidence_json TEXT NOT NULL DEFAULT '[]',
     project_conventions_json TEXT NOT NULL DEFAULT '[]',
     discovered_conventions_json TEXT NOT NULL DEFAULT '[]',
@@ -237,6 +241,8 @@ WHERE run_id = $run_id;";
                 EnsureColumn(connection, "audit_runs", "execution_transaction_name", "TEXT NULL");
                 EnsureColumn(connection, "audit_runs", "assumptions_json", "TEXT NOT NULL DEFAULT '[]'");
                 EnsureColumn(connection, "audit_runs", "probe_count", "INTEGER NOT NULL DEFAULT 0");
+                EnsureColumn(connection, "audit_runs", "semantic_probe_count", "INTEGER NOT NULL DEFAULT 0");
+                EnsureColumn(connection, "audit_runs", "visual_probe_count", "INTEGER NOT NULL DEFAULT 0");
                 EnsureColumn(connection, "audit_runs", "probe_evidence_json", "TEXT NOT NULL DEFAULT '[]'");
                 EnsureColumn(connection, "audit_runs", "project_conventions_json", "TEXT NOT NULL DEFAULT '[]'");
                 EnsureColumn(connection, "audit_runs", "discovered_conventions_json", "TEXT NOT NULL DEFAULT '[]'");
@@ -285,10 +291,26 @@ WHERE run_id = $run_id;";
             command.Parameters.AddWithValue("$transaction_names_json", JsonSerializer.Serialize(proposal.TransactionNames ?? Array.Empty<string>()));
             command.Parameters.AddWithValue("$assumptions_json", JsonSerializer.Serialize(proposal.Assumptions ?? Array.Empty<string>()));
             command.Parameters.AddWithValue("$probe_count", session.RetrievedEvidence?.Count ?? 0);
+            command.Parameters.AddWithValue("$semantic_probe_count", session.RetrievedEvidence == null ? 0 : CountProbes(session.RetrievedEvidence, ProbeMode.Semantic));
+            command.Parameters.AddWithValue("$visual_probe_count", session.RetrievedEvidence == null ? 0 : CountProbes(session.RetrievedEvidence, ProbeMode.Visual));
             command.Parameters.AddWithValue("$probe_evidence_json", JsonSerializer.Serialize(session.RetrievedEvidence ?? Array.Empty<ProbeEvidence>()));
             command.Parameters.AddWithValue("$project_conventions_json", "[]");
             command.Parameters.AddWithValue("$discovered_conventions_json", "[]");
             command.Parameters.AddWithValue("$diagnostics_json", JsonSerializer.Serialize(session.CompilationResult?.Diagnostics ?? Array.Empty<string>()));
+        }
+
+        private static int CountProbes(IReadOnlyList<ProbeEvidence> evidence, ProbeMode probeMode)
+        {
+            var count = 0;
+            foreach (var item in evidence)
+            {
+                if (item != null && item.ProbeMode == probeMode)
+                {
+                    count++;
+                }
+            }
+
+            return count;
         }
 
         private static void EnsureColumn(SqliteConnection connection, string tableName, string columnName, string columnDefinition)

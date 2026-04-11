@@ -21,8 +21,10 @@ namespace RevitAgenticAICompanion.Runtime
             string scopeSummary,
             string confidenceLevel,
             string evidenceSummary,
+            ProbeMode probeMode,
             string probePurpose,
             string probeQuestion,
+            string whySemanticIsInsufficient,
             IReadOnlyList<string> assumptions,
             ProposalProvenance provenance)
         {
@@ -42,8 +44,10 @@ namespace RevitAgenticAICompanion.Runtime
             ScopeSummary = scopeSummary ?? string.Empty;
             ConfidenceLevel = confidenceLevel ?? string.Empty;
             EvidenceSummary = evidenceSummary ?? string.Empty;
+            ProbeMode = probeMode;
             ProbePurpose = probePurpose ?? string.Empty;
             ProbeQuestion = probeQuestion ?? string.Empty;
+            WhySemanticIsInsufficient = whySemanticIsInsufficient ?? string.Empty;
             Assumptions = assumptions ?? new string[0];
             Provenance = provenance ?? new ProposalProvenance("Unknown", 0);
         }
@@ -81,6 +85,8 @@ namespace RevitAgenticAICompanion.Runtime
                 scopeSummary,
                 confidenceLevel,
                 evidenceSummary,
+                ProbeMode.None,
+                string.Empty,
                 string.Empty,
                 string.Empty,
                 assumptions,
@@ -98,8 +104,10 @@ namespace RevitAgenticAICompanion.Runtime
             string scopeSummary,
             string confidenceLevel,
             string evidenceSummary,
+            ProbeMode probeMode,
             string probePurpose,
             string probeQuestion,
+            string whySemanticIsInsufficient,
             IReadOnlyList<string> assumptions,
             ProposalProvenance provenance)
         {
@@ -119,8 +127,10 @@ namespace RevitAgenticAICompanion.Runtime
                 scopeSummary,
                 confidenceLevel,
                 evidenceSummary,
+                probeMode,
                 probePurpose,
                 probeQuestion,
+                whySemanticIsInsufficient,
                 assumptions,
                 provenance);
         }
@@ -155,6 +165,8 @@ namespace RevitAgenticAICompanion.Runtime
                 scopeSummary,
                 confidenceLevel,
                 evidenceSummary,
+                ProbeMode.None,
+                string.Empty,
                 string.Empty,
                 string.Empty,
                 assumptions,
@@ -187,6 +199,8 @@ namespace RevitAgenticAICompanion.Runtime
                 scopeSummary,
                 confidenceLevel,
                 string.Empty,
+                ProbeMode.None,
+                string.Empty,
                 string.Empty,
                 string.Empty,
                 assumptions,
@@ -209,8 +223,10 @@ namespace RevitAgenticAICompanion.Runtime
         public string ScopeSummary { get; }
         public string ConfidenceLevel { get; }
         public string EvidenceSummary { get; }
+        public ProbeMode ProbeMode { get; }
         public string ProbePurpose { get; }
         public string ProbeQuestion { get; }
+        public string WhySemanticIsInsufficient { get; }
         public IReadOnlyList<string> Assumptions { get; }
         public ProposalProvenance Provenance { get; }
         public string SourceHash { get; set; }

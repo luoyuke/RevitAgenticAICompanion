@@ -11,7 +11,9 @@ namespace RevitAgenticAICompanion.Runtime
             IReadOnlyList<ProbeEvidence> retrievedEvidence = null,
             IReadOnlyList<UserPreferenceRecord> userPreferences = null,
             int completedProbeCount = 0,
+            int completedVisualProbeCount = 0,
             int maxProbeCount = 3,
+            int maxVisualProbeCount = 3,
             DateTimeOffset? startedUtc = null)
         {
             Prompt = prompt;
@@ -19,7 +21,9 @@ namespace RevitAgenticAICompanion.Runtime
             RetrievedEvidence = retrievedEvidence ?? Array.Empty<ProbeEvidence>();
             UserPreferences = userPreferences ?? Array.Empty<UserPreferenceRecord>();
             CompletedProbeCount = completedProbeCount;
+            CompletedVisualProbeCount = completedVisualProbeCount;
             MaxProbeCount = maxProbeCount;
+            MaxVisualProbeCount = maxVisualProbeCount;
             StartedUtc = startedUtc ?? DateTimeOffset.UtcNow;
         }
 
@@ -28,7 +32,9 @@ namespace RevitAgenticAICompanion.Runtime
         public IReadOnlyList<ProbeEvidence> RetrievedEvidence { get; }
         public IReadOnlyList<UserPreferenceRecord> UserPreferences { get; }
         public int CompletedProbeCount { get; }
+        public int CompletedVisualProbeCount { get; }
         public int MaxProbeCount { get; }
+        public int MaxVisualProbeCount { get; }
         public DateTimeOffset StartedUtc { get; }
 
         public PlanningRequest WithEvidence(
@@ -41,13 +47,34 @@ namespace RevitAgenticAICompanion.Runtime
                 evidenceList.Add(evidence);
             }
 
+            var completedSemanticProbeCount = 0;
+            var completedVisualProbeCount = 0;
+            foreach (var item in evidenceList)
+            {
+                if (item == null)
+                {
+                    continue;
+                }
+
+                if (item.ProbeMode == ProbeMode.Visual)
+                {
+                    completedVisualProbeCount++;
+                }
+                else if (item.ProbeMode == ProbeMode.Semantic)
+                {
+                    completedSemanticProbeCount++;
+                }
+            }
+
             return new PlanningRequest(
                 Prompt,
                 ContextSnapshot,
                 evidenceList,
                 userPreferences ?? UserPreferences,
-                evidenceList.Count,
+                completedSemanticProbeCount,
+                completedVisualProbeCount,
                 MaxProbeCount,
+                MaxVisualProbeCount,
                 StartedUtc);
         }
     }

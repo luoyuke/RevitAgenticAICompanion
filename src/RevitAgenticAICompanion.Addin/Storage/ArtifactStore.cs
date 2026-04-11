@@ -124,6 +124,9 @@ namespace RevitAgenticAICompanion.Storage
             builder.AppendLine("Response Kind:");
             builder.AppendLine(proposal.ResponseKind.ToString());
             builder.AppendLine();
+            builder.AppendLine("Probe Mode:");
+            builder.AppendLine(proposal.ProbeMode.ToString());
+            builder.AppendLine();
             builder.AppendLine("Capability Band:");
             builder.AppendLine(proposal.CapabilityBand ?? string.Empty);
             builder.AppendLine();
@@ -169,6 +172,12 @@ namespace RevitAgenticAICompanion.Storage
                 builder.AppendLine(proposal.ProbePurpose ?? string.Empty);
                 builder.AppendLine("Probe Question:");
                 builder.AppendLine(proposal.ProbeQuestion ?? string.Empty);
+                if (proposal.ProbeMode == ProbeMode.Visual)
+                {
+                    builder.AppendLine("Why Semantic Is Insufficient:");
+                    builder.AppendLine(proposal.WhySemanticIsInsufficient ?? string.Empty);
+                }
+
                 builder.AppendLine();
             }
 
@@ -180,10 +189,16 @@ namespace RevitAgenticAICompanion.Storage
             builder.AppendLine("Retrieved Evidence:");
             foreach (var evidence in planningRequest?.RetrievedEvidence ?? Array.Empty<ProbeEvidence>())
             {
-                builder.AppendLine("- Probe " + evidence.ProbeOrdinal + ": " + evidence.Purpose);
+                builder.AppendLine("- Probe " + evidence.ProbeOrdinal + " [" + evidence.ProbeMode + "]: " + evidence.Purpose);
                 builder.AppendLine("  Question: " + evidence.Question);
                 builder.AppendLine("  Summary: " + evidence.Summary);
                 builder.AppendLine("  Element ids: " + string.Join(", ", evidence.ElementIds ?? Enumerable.Empty<long>()));
+                if (evidence.ProbeMode == ProbeMode.Visual)
+                {
+                    builder.AppendLine("  Why semantic is insufficient: " + evidence.WhySemanticIsInsufficient);
+                    builder.AppendLine("  Image paths: " + string.Join(", ", evidence.ImagePaths ?? Enumerable.Empty<string>()));
+                    builder.AppendLine("  Metadata path: " + (evidence.MetadataPath ?? string.Empty));
+                }
             }
 
             builder.AppendLine();

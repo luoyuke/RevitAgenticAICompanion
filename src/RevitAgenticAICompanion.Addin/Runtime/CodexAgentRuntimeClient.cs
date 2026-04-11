@@ -17,7 +17,10 @@ namespace RevitAgenticAICompanion.Runtime
     public sealed class CodexAgentRuntimeClient : IAgentRuntimeClient, IDisposable
     {
         private const string ClientVersion = "0.1.0";
-        private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(20);
+        private static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(8);
+        private static readonly TimeSpan InitializeTimeout = TimeSpan.FromMinutes(8);
+        private static readonly TimeSpan AppServerTurnTimeout = TimeSpan.FromMinutes(8);
+        private static readonly UTF8Encoding Utf8NoBom = new UTF8Encoding(false);
         private static readonly TimeSpan StatusTimeout = TimeSpan.FromSeconds(15);
         private static readonly TimeSpan ExecTimeout = TimeSpan.FromMinutes(8);
         private readonly LocalStoragePaths _paths;
@@ -119,7 +122,9 @@ namespace RevitAgenticAICompanion.Runtime
             }
 
             var prompt = BuildPlanningPrompt(request);
-            var structuredJson = await RunPlanningTurnAsync(request.ContextSnapshot, prompt, true, cancellationToken);
+            var structuredJson = HasVisualEvidence(request)
+                ? await RunPlanningTurnWithImagesAsync(request, prompt, true, cancellationToken)
+                : await RunPlanningTurnAsync(request.ContextSnapshot, prompt, true, cancellationToken);
 
             var proposalData = JsonSerializer.Deserialize<CodexPlanningPayload>(structuredJson, _jsonOptions);
             if (proposalData == null)
@@ -234,6 +239,44 @@ namespace RevitAgenticAICompanion.Runtime
             }
         }
 
+        private async Task<string> RunPlanningTurnWithImagesAsync(
+            PlanningRequest request,
+            string prompt,
+            bool useOutputSchema,
+            CancellationToken cancellationToken)
+        {
+            await EnsureConnectedAsync(cancellationToken);
+
+            var projectKey = ProjectKeyBuilder.FromSnapshot(request.ContextSnapshot);
+            var threadId = _threadStore.GetThreadId(projectKey);
+            var imagePaths = GetVisualEvidenceImagePaths(request);
+            try
+            {
+                if (string.IsNullOrWhiteSpace(threadId))
+                {
+                    threadId = await GetOrCreateThreadIdAsync(projectKey, cancellationToken);
+                }
+
+                var turnParams = BuildTurnParams(
+                    threadId,
+                    prompt,
+                    useOutputSchema ? BuildOutputSchema() : null,
+                    imagePaths);
+                return await RunStructuredTurnAsync(turnParams, cancellationToken);
+            }
+            catch (InvalidOperationException ex) when (!string.IsNullOrWhiteSpace(threadId) && LooksLikeMissingThread(ex.Message))
+            {
+                _threadStore.ClearThreadId(projectKey);
+                var freshThreadId = await GetOrCreateThreadIdAsync(projectKey, cancellationToken);
+                var retryParams = BuildTurnParams(
+                    freshThreadId,
+                    prompt,
+                    useOutputSchema ? BuildOutputSchema() : null,
+                    imagePaths);
+                return await RunStructuredTurnAsync(retryParams, cancellationToken);
+            }
+        }
+
         private async Task<CodexTurnResult> RunTurnAsync(
             string threadId,
             string prompt,
@@ -302,9 +345,9 @@ namespace RevitAgenticAICompanion.Runtime
                     RedirectStandardInput = true,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
-                    StandardInputEncoding = Encoding.UTF8,
-                    StandardOutputEncoding = Encoding.UTF8,
-                    StandardErrorEncoding = Encoding.UTF8,
+                    StandardInputEncoding = Utf8NoBom,
+                    StandardOutputEncoding = Utf8NoBom,
+                    StandardErrorEncoding = Utf8NoBom,
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     WorkingDirectory = _paths.RootPath,
@@ -379,6 +422,7 @@ namespace RevitAgenticAICompanion.Runtime
                 }
 
                 var executable = ResolveCodexExecutable();
+                _lastTransportError = string.Empty;
                 var process = new Process
                 {
                     StartInfo = new ProcessStartInfo
@@ -388,11 +432,12 @@ namespace RevitAgenticAICompanion.Runtime
                         RedirectStandardInput = true,
                         RedirectStandardOutput = true,
                         RedirectStandardError = true,
-                        StandardInputEncoding = Encoding.UTF8,
-                        StandardOutputEncoding = Encoding.UTF8,
-                        StandardErrorEncoding = Encoding.UTF8,
+                        StandardInputEncoding = Utf8NoBom,
+                        StandardOutputEncoding = Utf8NoBom,
+                        StandardErrorEncoding = Utf8NoBom,
                         UseShellExecute = false,
                         CreateNoWindow = true,
+                        WorkingDirectory = _paths.RootPath,
                     },
                     EnableRaisingEvents = true,
                 };
@@ -418,13 +463,15 @@ namespace RevitAgenticAICompanion.Runtime
                         },
                         ["capabilities"] = new JsonObject
                         {
+                            ["experimentalApi"] = true,
                             ["optOutNotificationMethods"] = new JsonArray(
                                 "item/agentMessage/delta",
                                 "thread/tokenUsage/updated",
                                 "turn/diff/updated"),
                         },
                     },
-                    cancellationToken);
+                    cancellationToken,
+                    InitializeTimeout);
 
                 await SendNotificationAsync("initialized", null, cancellationToken);
                 _isInitialized = true;
@@ -453,8 +500,31 @@ namespace RevitAgenticAICompanion.Runtime
             return threadId;
         }
 
-        private static JsonObject BuildTurnParams(string threadId, string prompt, JsonNode schema)
+        private static JsonObject BuildTurnParams(string threadId, string prompt, JsonNode schema, IReadOnlyList<string> imagePaths = null)
         {
+            var input = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["type"] = "text",
+                    ["text"] = prompt,
+                },
+            };
+
+            foreach (var imagePath in imagePaths ?? Array.Empty<string>())
+            {
+                if (string.IsNullOrWhiteSpace(imagePath))
+                {
+                    continue;
+                }
+
+                input.Add(new JsonObject
+                {
+                    ["type"] = "localImage",
+                    ["path"] = imagePath,
+                });
+            }
+
             return new JsonObject
             {
                 ["threadId"] = threadId,
@@ -467,14 +537,7 @@ namespace RevitAgenticAICompanion.Runtime
                         ["type"] = "fullAccess",
                     },
                 },
-                ["input"] = new JsonArray
-                {
-                    new JsonObject
-                    {
-                        ["type"] = "text",
-                        ["text"] = prompt,
-                    },
-                },
+                ["input"] = input,
                 ["outputSchema"] = schema?.DeepClone(),
             };
         }
@@ -588,6 +651,15 @@ namespace RevitAgenticAICompanion.Runtime
                 await SendRequestAsync("turn/start", turnParams, cancellationToken);
                 using (cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken)))
                 {
+                    var finishedTask = await Task.WhenAny(
+                        completion.Task,
+                        Task.Delay(AppServerTurnTimeout, CancellationToken.None));
+                    if (finishedTask != completion.Task)
+                    {
+                        ResetConnection("Timed out waiting for codex app-server turn to complete.");
+                        throw new TimeoutException("Timed out waiting for codex app-server turn to complete.");
+                    }
+
                     return await completion.Task;
                 }
             }
@@ -597,7 +669,16 @@ namespace RevitAgenticAICompanion.Runtime
             }
         }
 
-        private async Task<JsonNode> SendRequestAsync(string method, JsonObject parameters, CancellationToken cancellationToken)
+        private Task<JsonNode> SendRequestAsync(string method, JsonObject parameters, CancellationToken cancellationToken)
+        {
+            return SendRequestAsync(method, parameters, cancellationToken, RequestTimeout);
+        }
+
+        private async Task<JsonNode> SendRequestAsync(
+            string method,
+            JsonObject parameters,
+            CancellationToken cancellationToken,
+            TimeSpan timeout)
         {
             if (_process == null || _process.HasExited || _stdin == null)
             {
@@ -621,7 +702,7 @@ namespace RevitAgenticAICompanion.Runtime
 
             using (cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken)))
             {
-                var finishedTask = await Task.WhenAny(completion.Task, Task.Delay(RequestTimeout, CancellationToken.None));
+                var finishedTask = await Task.WhenAny(completion.Task, Task.Delay(timeout, CancellationToken.None));
                 if (finishedTask != completion.Task)
                 {
                     _pendingRequests.TryRemove(id, out _);
@@ -629,7 +710,7 @@ namespace RevitAgenticAICompanion.Runtime
                         _lastTransportError,
                         "No response was received from codex app-server.");
                     ResetConnection("Timed out waiting for codex app-server response to '" + method + "'. " + detail);
-                    throw new TimeoutException("Timed out waiting for codex app-server response to '" + method + "'.");
+                    throw new TimeoutException("Timed out waiting for codex app-server response to '" + method + "'. " + detail);
                 }
 
                 return await completion.Task;
@@ -716,6 +797,13 @@ namespace RevitAgenticAICompanion.Runtime
                     }
 
                     handler?.Invoke(method, message?["params"]);
+                }
+
+                if (_pendingRequests.Count > 0)
+                {
+                    FailPendingRequests(new InvalidOperationException(FirstNonEmpty(
+                        _lastTransportError,
+                        "Codex app-server stopped before responding.")));
                 }
             }
             catch (Exception ex)
@@ -945,6 +1033,33 @@ namespace RevitAgenticAICompanion.Runtime
             return ProjectKeyBuilder.FromSnapshot(snapshot);
         }
 
+        private static bool HasVisualEvidence(PlanningRequest request)
+        {
+            return GetVisualEvidenceImagePaths(request).Count > 0;
+        }
+
+        private static IReadOnlyList<string> GetVisualEvidenceImagePaths(PlanningRequest request)
+        {
+            var imagePaths = new List<string>();
+            foreach (var evidence in request?.RetrievedEvidence ?? Array.Empty<ProbeEvidence>())
+            {
+                if (evidence == null || evidence.ProbeMode != ProbeMode.Visual)
+                {
+                    continue;
+                }
+
+                foreach (var imagePath in evidence.ImagePaths ?? Array.Empty<string>())
+                {
+                    if (!string.IsNullOrWhiteSpace(imagePath) && File.Exists(imagePath))
+                    {
+                        imagePaths.Add(imagePath);
+                    }
+                }
+            }
+
+            return imagePaths;
+        }
+
         private static string BuildPlanningPrompt(PlanningRequest request)
         {
             var snapshot = request.ContextSnapshot;
@@ -960,23 +1075,28 @@ namespace RevitAgenticAICompanion.Runtime
             builder.AppendLine("This host compiles and executes C# in-process, but the host owns the transaction lifecycle.");
             builder.AppendLine("Planning model:");
             builder.AppendLine("- Ambient context is advisory.");
-            builder.AppendLine("- Retrieved evidence from executed inspection probes is authoritative for this turn.");
+            builder.AppendLine("- Retrieved evidence from executed semantic and visual probes is authoritative for this turn.");
             builder.AppendLine("- User preferences are durable cross-project preferences only. They are not project facts.");
             builder.AppendLine("Rules:");
             builder.AppendLine("- Always populate every schema field.");
-            builder.AppendLine("- Always set capabilityBand, riskLevel, scopeSummary, confidenceLevel, evidenceSummary, probePurpose, probeQuestion, and assumptions.");
-            builder.AppendLine("- For reply_only, set messageText to the user-facing reply, actionSummary = \"\", transactionName = \"\", generatedSource = \"\", isUndoHostile = false, capabilityBand = \"reply\", riskLevel = \"low\", scopeSummary = \"\", confidenceLevel = \"low\", evidenceSummary = \"\", probePurpose = \"\", probeQuestion = \"\", assumptions = [].");
+            builder.AppendLine("- Always set capabilityBand, riskLevel, scopeSummary, confidenceLevel, evidenceSummary, probeMode, probePurpose, probeQuestion, whySemanticIsInsufficient, and assumptions.");
+            builder.AppendLine("- For reply_only, set messageText to the user-facing reply, actionSummary = \"\", transactionName = \"\", generatedSource = \"\", isUndoHostile = false, capabilityBand = \"reply\", riskLevel = \"low\", scopeSummary = \"\", confidenceLevel = \"low\", evidenceSummary = \"\", probeMode = \"\", probePurpose = \"\", probeQuestion = \"\", whySemanticIsInsufficient = \"\", assumptions = [].");
             builder.AppendLine("- For inspection_probe, set messageText to a short explanation of what will be inspected and why. Set transactionName = \"\", isUndoHostile = false, capabilityBand = \"read_query\", riskLevel = \"low\", and generate source for GeneratedActions.CompanionAction.Execute(UIApplication uiapp).");
-            builder.AppendLine("- For inspection_probe, probePurpose and probeQuestion are required and must be concrete.");
+            builder.AppendLine("- For inspection_probe, set probeMode to either semantic or visual.");
+            builder.AppendLine("- For semantic probes, keep whySemanticIsInsufficient = \"\".");
+            builder.AppendLine("- For visual probes, probePurpose and probeQuestion are required, and whySemanticIsInsufficient must explain specifically why semantic evidence is insufficient for the decision.");
             builder.AppendLine("- For read_only_query, use generated read-only source only when live model inspection is required for the final answer. Set transactionName = \"\", isUndoHostile = false, capabilityBand = \"read_query\", and a useful scopeSummary.");
             builder.AppendLine("- For action_proposal, messageText should briefly explain the planned action before approval.");
-            builder.AppendLine("- For action_proposal, set actionSummary, transactionName, generatedSource, isUndoHostile, capabilityBand, riskLevel, and scopeSummary explicitly.");
+            builder.AppendLine("- For action_proposal, set actionSummary, transactionName, generatedSource, isUndoHostile, capabilityBand, riskLevel, and scopeSummary explicitly, and keep probeMode = \"\" with whySemanticIsInsufficient = \"\".");
             builder.AppendLine("- For action_proposal, generate two static entry points: GeneratedActions.CompanionAction.Preview(UIApplication uiapp) and GeneratedActions.CompanionAction.Execute(UIApplication uiapp).");
             builder.AppendLine("- Do not create Transaction or TransactionGroup objects.");
             builder.AppendLine("- The code may use the raw Revit API.");
             builder.AppendLine("- Keep write scope bounded and safe.");
             builder.AppendLine("- Inspection-first is required when the task depends on project-specific naming, parameter values, system names, family/type matching, linked-model coordination, level-based logic, clash coordination, or semantic labels such as domestic, supply, return, fire, architectural, or writable parameter targets.");
-            builder.AppendLine("- You may request at most " + request.MaxProbeCount + " inspection_probe steps for this user turn. If you still lack evidence after that, return reply_only or action_proposal with explicit assumptions and low confidence.");
+            builder.AppendLine("- Semantic probes are for authoritative model facts: ids, parameters, categories, counts, writable targets, and element relationships.");
+            builder.AppendLine("- Visual probes are for view-dependent judgments: overlap, readability, density, clutter, spatial label placement, and layout quality visible in a view.");
+            builder.AppendLine("- Prefer semantic probes by default. Request a visual probe only when image evidence would materially reduce ambiguity.");
+            builder.AppendLine("- You may request at most " + request.MaxProbeCount + " semantic inspection_probe steps and at most " + request.MaxVisualProbeCount + " visual inspection_probe steps for this user turn.");
             builder.AppendLine("- Do not loop forever. If existing evidence already answers the question, do not ask for another probe.");
             builder.AppendLine("- For action_proposal, keep the target set explicit. Prefer the current selection, active view, current level, current room, one clearly named category, or one clearly stated confined area.");
             builder.AppendLine("- For action_proposal, Preview must inspect and report the affected elements, anchors, values, or likely created/modified targets before Execute performs the write.");
@@ -1030,17 +1150,25 @@ namespace RevitAgenticAICompanion.Runtime
             {
                 foreach (var evidence in request.RetrievedEvidence)
                 {
-                    builder.AppendLine("- Probe " + evidence.ProbeOrdinal + ": " + evidence.Purpose);
+                    builder.AppendLine("- Probe " + evidence.ProbeOrdinal + " [" + evidence.ProbeMode + "]: " + evidence.Purpose);
                     builder.AppendLine("  Question: " + evidence.Question);
                     builder.AppendLine("  Summary: " + evidence.Summary);
                     builder.AppendLine("  ElementIds: " + string.Join(", ", evidence.ElementIds ?? Array.Empty<long>()));
+                    if (evidence.ProbeMode == ProbeMode.Visual)
+                    {
+                        builder.AppendLine("  Why semantic is insufficient: " + evidence.WhySemanticIsInsufficient);
+                        builder.AppendLine("  ImagePaths: " + string.Join(", ", evidence.ImagePaths ?? Array.Empty<string>()));
+                        builder.AppendLine("  MetadataPath: " + (evidence.MetadataPath ?? string.Empty));
+                    }
                 }
             }
 
             builder.AppendLine();
             builder.AppendLine("Probe budget:");
-            builder.AppendLine("Completed probes: " + request.CompletedProbeCount);
-            builder.AppendLine("Maximum probes: " + request.MaxProbeCount);
+            builder.AppendLine("Completed semantic probes: " + request.CompletedProbeCount);
+            builder.AppendLine("Maximum semantic probes: " + request.MaxProbeCount);
+            builder.AppendLine("Completed visual probes: " + request.CompletedVisualProbeCount);
+            builder.AppendLine("Maximum visual probes: " + request.MaxVisualProbeCount);
             builder.AppendLine();
             builder.AppendLine("The generated source must include:");
             builder.AppendLine("using System;");
@@ -1071,7 +1199,8 @@ namespace RevitAgenticAICompanion.Runtime
             builder.AppendLine("Requirements:");
             builder.AppendLine("- Keep the same responseKind unless compiler diagnostics prove the previous kind was wrong.");
             builder.AppendLine("- Return a concise messageText that explains the repaired plan.");
-            builder.AppendLine("- Populate every schema field, including actionSummary, transactionName, generatedSource, isUndoHostile, capabilityBand, riskLevel, scopeSummary, confidenceLevel, evidenceSummary, probePurpose, probeQuestion, and assumptions.");
+            builder.AppendLine("- Populate every schema field, including actionSummary, transactionName, generatedSource, isUndoHostile, capabilityBand, riskLevel, scopeSummary, confidenceLevel, evidenceSummary, probeMode, probePurpose, probeQuestion, whySemanticIsInsufficient, and assumptions.");
+            builder.AppendLine("- Unless you are repairing an inspection_probe, keep probeMode = \"\" and whySemanticIsInsufficient = \"\".");
             builder.AppendLine("- Keep the same entry points: GeneratedActions.CompanionAction.Execute(UIApplication uiapp), and if this is an action_proposal also GeneratedActions.CompanionAction.Preview(UIApplication uiapp).");
             builder.AppendLine("- Do not create Transaction or TransactionGroup objects.");
             builder.AppendLine("- Return GeneratedActionResult with IReadOnlyList<long> changed element ids.");
@@ -1116,12 +1245,13 @@ namespace RevitAgenticAICompanion.Runtime
             builder.AppendLine("Requirements:");
             builder.AppendLine("- Keep the repaired write scope bounded and explicit.");
             builder.AppendLine("- Populate every schema field.");
-            builder.AppendLine("- If you return reply_only, set generatedSource = \"\", transactionName = \"\", isUndoHostile = false, capabilityBand = \"reply\", riskLevel = \"low\", and explain the failure plainly.");
+            builder.AppendLine("- If you return reply_only, set generatedSource = \"\", transactionName = \"\", isUndoHostile = false, capabilityBand = \"reply\", riskLevel = \"low\", probeMode = \"\", whySemanticIsInsufficient = \"\", and explain the failure plainly.");
             builder.AppendLine("- If you return action_proposal, use the same entry points: GeneratedActions.CompanionAction.Execute(UIApplication uiapp) and GeneratedActions.CompanionAction.Preview(UIApplication uiapp).");
             builder.AppendLine("- Do not create Transaction or TransactionGroup objects.");
             builder.AppendLine("- Use elementId.Value, not IntegerValue.");
             builder.AppendLine("- Return GeneratedActionResult with IReadOnlyList<long> changed element ids.");
             builder.AppendLine("- Prefer a strategy change over repeating the failed API call.");
+            builder.AppendLine("- For action_proposal, keep probeMode = \"\" and whySemanticIsInsufficient = \"\".");
             builder.AppendLine();
             builder.AppendLine("Original user prompt:");
             builder.AppendLine(request.Prompt ?? string.Empty);
@@ -1186,7 +1316,7 @@ namespace RevitAgenticAICompanion.Runtime
             {
                 ["type"] = "object",
                 ["additionalProperties"] = false,
-                ["required"] = new JsonArray("responseKind", "messageText", "actionSummary", "transactionName", "generatedSource", "isUndoHostile", "capabilityBand", "riskLevel", "scopeSummary", "confidenceLevel", "evidenceSummary", "probePurpose", "probeQuestion", "assumptions"),
+                ["required"] = new JsonArray("responseKind", "messageText", "actionSummary", "transactionName", "generatedSource", "isUndoHostile", "capabilityBand", "riskLevel", "scopeSummary", "confidenceLevel", "evidenceSummary", "probeMode", "probePurpose", "probeQuestion", "whySemanticIsInsufficient", "assumptions"),
                 ["properties"] = new JsonObject
                 {
                     ["responseKind"] = new JsonObject
@@ -1237,11 +1367,20 @@ namespace RevitAgenticAICompanion.Runtime
                     {
                         ["type"] = "string",
                     },
+                    ["probeMode"] = new JsonObject
+                    {
+                        ["type"] = "string",
+                        ["enum"] = new JsonArray(string.Empty, "semantic", "visual"),
+                    },
                     ["probePurpose"] = new JsonObject
                     {
                         ["type"] = "string",
                     },
                     ["probeQuestion"] = new JsonObject
+                    {
+                        ["type"] = "string",
+                    },
+                    ["whySemanticIsInsufficient"] = new JsonObject
                     {
                         ["type"] = "string",
                     },
@@ -1290,8 +1429,10 @@ namespace RevitAgenticAICompanion.Runtime
                     payload.ScopeSummary,
                     payload.ConfidenceLevel,
                     payload.EvidenceSummary,
+                    ParseProbeMode(payload.ProbeMode),
                     payload.ProbePurpose,
                     payload.ProbeQuestion,
+                    payload.WhySemanticIsInsufficient,
                     payload.Assumptions ?? Array.Empty<string>(),
                     new ProposalProvenance("Codex", repairCount));
             }
@@ -1358,6 +1499,21 @@ namespace RevitAgenticAICompanion.Runtime
         private static bool RequiresGeneratedCode(CodexPlanningPayload payload)
         {
             return IsInspectionProbe(payload) || IsReadOnlyQuery(payload) || IsActionProposal(payload);
+        }
+
+        private static ProbeMode ParseProbeMode(string probeMode)
+        {
+            if (string.Equals(probeMode, "visual", StringComparison.OrdinalIgnoreCase))
+            {
+                return ProbeMode.Visual;
+            }
+
+            if (string.Equals(probeMode, "semantic", StringComparison.OrdinalIgnoreCase))
+            {
+                return ProbeMode.Semantic;
+            }
+
+            return ProbeMode.None;
         }
 
         private static JsonNode GetProperty(JsonNode node, string propertyName)
@@ -1490,8 +1646,10 @@ namespace RevitAgenticAICompanion.Runtime
             public string ScopeSummary { get; set; }
             public string ConfidenceLevel { get; set; }
             public string EvidenceSummary { get; set; }
+            public string ProbeMode { get; set; }
             public string ProbePurpose { get; set; }
             public string ProbeQuestion { get; set; }
+            public string WhySemanticIsInsufficient { get; set; }
             public string[] Assumptions { get; set; }
         }
 

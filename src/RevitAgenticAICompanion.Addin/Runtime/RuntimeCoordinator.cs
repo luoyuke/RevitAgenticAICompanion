@@ -26,6 +26,7 @@ namespace RevitAgenticAICompanion.Runtime
         private readonly UserMemoryStore _userMemoryStore;
         private static readonly TimeSpan PlanningBudget = TimeSpan.FromMinutes(8);
         private const int MaxInspectionProbes = 3;
+        private const int MaxVisualProbes = 3;
         private const string MemoryCommandPrefix = "/memory";
 
         public RuntimeCoordinator(
@@ -83,7 +84,8 @@ namespace RevitAgenticAICompanion.Runtime
                 prompt,
                 snapshot,
                 userPreferences: userPreferences,
-                maxProbeCount: MaxInspectionProbes);
+                maxProbeCount: MaxInspectionProbes,
+                maxVisualProbeCount: MaxVisualProbes);
             var planningStopwatch = Stopwatch.StartNew();
 
             while (true)
@@ -138,7 +140,41 @@ namespace RevitAgenticAICompanion.Runtime
 
                 if (proposal.ContinuesPlanning)
                 {
-                    if (planningRequest.CompletedProbeCount >= planningRequest.MaxProbeCount)
+                    if (proposal.ProbeMode == ProbeMode.Visual)
+                    {
+                        if (planningRequest.CompletedVisualProbeCount >= planningRequest.MaxVisualProbeCount)
+                        {
+                            var visualProbeLimitProposal = ProposalCandidate.CreateReply(
+                                prompt,
+                                BuildVisualProbeLimitMessage(planningRequest),
+                                "reply",
+                                "low",
+                                "Planning paused after bounded visual inspection.",
+                                "low",
+                                Array.Empty<string>(),
+                                new ProposalProvenance("Host visual probe limit", proposal.Provenance?.RepairCount ?? 0));
+                            CurrentSession = BuildSession(snapshot, planningRequest, visualProbeLimitProposal, new ValidationReport(), GeneratedActionCompilationResult.NotApplicable());
+                            _auditStore.WritePlanning(CurrentSession);
+                            return CurrentSession;
+                        }
+
+                        if (!HasUsableVisualProbeJustification(proposal))
+                        {
+                            var deniedProposal = ProposalCandidate.CreateReply(
+                                prompt,
+                                BuildVisualProbeDeniedMessage(),
+                                "reply",
+                                "low",
+                                "Planning paused because the requested visual probe was not justified.",
+                                "low",
+                                Array.Empty<string>(),
+                                new ProposalProvenance("Host visual probe gate", proposal.Provenance?.RepairCount ?? 0));
+                            CurrentSession = BuildSession(snapshot, planningRequest, deniedProposal, new ValidationReport(), GeneratedActionCompilationResult.NotApplicable());
+                            _auditStore.WritePlanning(CurrentSession);
+                            return CurrentSession;
+                        }
+                    }
+                    else if (planningRequest.CompletedProbeCount >= planningRequest.MaxProbeCount)
                     {
                         var probeLimitProposal = ProposalCandidate.CreateReply(
                             prompt,
@@ -161,6 +197,43 @@ namespace RevitAgenticAICompanion.Runtime
                         return CurrentSession;
                     }
 
+                    if (proposal.ProbeMode == ProbeMode.Visual)
+                    {
+                        var visualProbe = await _dispatcher.Enqueue(new CaptureVisualProbeRequest(session));
+                        var visualExecution = new ProposalExecutionResult(
+                            visualProbe.IsSuccess,
+                            "Visual probe capture",
+                            visualProbe.Summary,
+                            Array.Empty<long>(),
+                            visualProbe.Error);
+                        session.ExecutionResult = visualExecution;
+                        _artifactStore.WriteExecution(session, visualExecution);
+                        _auditStore.WritePlanning(session);
+                        _auditStore.WriteExecution(session, visualExecution);
+
+                        if (!visualProbe.IsSuccess)
+                        {
+                            CurrentSession = await HandleFailureAnalysisAsync(session, visualExecution, "visual-probe");
+                            return CurrentSession;
+                        }
+
+                        var visualEvidence = new ProbeEvidence(
+                            proposal.ProposalId,
+                            planningRequest.CompletedVisualProbeCount + 1,
+                            ProbeMode.Visual,
+                            proposal.ProbePurpose,
+                            proposal.ProbeQuestion,
+                            visualProbe.Summary,
+                            Array.Empty<long>(),
+                            visualProbe.ImagePaths,
+                            visualProbe.MetadataPath,
+                            proposal.WhySemanticIsInsufficient,
+                            proposal.SourceHash,
+                            proposal.ArtifactDirectory);
+                        planningRequest = planningRequest.WithEvidence(visualEvidence, userPreferences);
+                        continue;
+                    }
+
                     var probeExecution = await _dispatcher.Enqueue(new ExecuteReadOnlyProposalRequest(session, _executor));
                     session.ExecutionResult = probeExecution;
                     _artifactStore.WriteExecution(session, probeExecution);
@@ -177,10 +250,14 @@ namespace RevitAgenticAICompanion.Runtime
                     var evidence = new ProbeEvidence(
                         proposal.ProposalId,
                         planningRequest.CompletedProbeCount + 1,
+                        ProbeMode.Semantic,
                         proposal.ProbePurpose,
                         proposal.ProbeQuestion,
                         probeExecution.Summary,
                         probeExecution.ChangedElementIds,
+                        Array.Empty<string>(),
+                        string.Empty,
+                        string.Empty,
                         proposal.SourceHash,
                         proposal.ArtifactDirectory);
                     planningRequest = planningRequest.WithEvidence(evidence, userPreferences);
@@ -325,6 +402,7 @@ namespace RevitAgenticAICompanion.Runtime
         private static string BuildProbeLimitMessage(PlanningRequest request)
         {
             var evidenceLines = request?.RetrievedEvidence?
+                .Where(evidence => evidence != null && evidence.ProbeMode == ProbeMode.Semantic)
                 .Select(evidence => evidence.ProbeOrdinal + ". " + evidence.Summary)
                 .ToArray() ?? Array.Empty<string>();
 
@@ -332,6 +410,35 @@ namespace RevitAgenticAICompanion.Runtime
                 " read-only inspection steps. Evidence gathered: " +
                 string.Join(" | ", evidenceLines) +
                 ". Clarify the target or ask me to continue with these assumptions.";
+        }
+
+        private static string BuildVisualProbeLimitMessage(PlanningRequest request)
+        {
+            var evidenceLines = request?.RetrievedEvidence?
+                .Where(evidence => evidence != null && evidence.ProbeMode == ProbeMode.Visual)
+                .Select(evidence => evidence.ProbeOrdinal + ". " + evidence.Summary)
+                .ToArray() ?? Array.Empty<string>();
+
+            return "I reached the maximum of " + request?.MaxVisualProbeCount +
+                " visual probe steps. Visual evidence gathered: " +
+                string.Join(" | ", evidenceLines) +
+                ". Continue with semantic evidence only, or narrow the layout question further.";
+        }
+
+        private static string BuildVisualProbeDeniedMessage()
+        {
+            return "Visual probe was denied because the request did not explain why semantic evidence was insufficient. Ask for another semantic inspection first, or request a visual probe with a concrete readability, overlap, or layout reason.";
+        }
+
+        private static bool HasUsableVisualProbeJustification(ProposalCandidate proposal)
+        {
+            if (proposal == null || proposal.ProbeMode != ProbeMode.Visual)
+            {
+                return true;
+            }
+
+            var justification = (proposal.WhySemanticIsInsufficient ?? string.Empty).Trim();
+            return justification.Length >= 24;
         }
 
         private PlanningSession TryHandleMemoryCommand(string prompt, RevitContextSnapshot snapshot)
@@ -393,7 +500,8 @@ namespace RevitAgenticAICompanion.Runtime
                 prompt,
                 snapshot,
                 userPreferences: _userMemoryStore.GetPreferences(),
-                maxProbeCount: MaxInspectionProbes);
+                maxProbeCount: MaxInspectionProbes,
+                maxVisualProbeCount: MaxVisualProbes);
             var proposal = ProposalCandidate.CreateReply(
                 prompt,
                 replyText,
@@ -525,8 +633,10 @@ namespace RevitAgenticAICompanion.Runtime
                 failedSession.ContextSnapshot,
                 failedSession.RetrievedEvidence,
                 failedSession.UserPreferences,
-                failedSession.RetrievedEvidence?.Count ?? 0,
-                MaxInspectionProbes);
+                CountProbes(failedSession.RetrievedEvidence, ProbeMode.Semantic),
+                CountProbes(failedSession.RetrievedEvidence, ProbeMode.Visual),
+                MaxInspectionProbes,
+                MaxVisualProbes);
 
             var analyzedProposal = await _agentRuntimeClient.AnalyzeFailureAsync(
                 planningRequest,
@@ -587,6 +697,25 @@ namespace RevitAgenticAICompanion.Runtime
                 var hash = sha256.ComputeHash(bytes);
                 return BitConverter.ToString(hash).Replace("-", string.Empty);
             }
+        }
+
+        private static int CountProbes(IReadOnlyList<ProbeEvidence> evidence, ProbeMode probeMode)
+        {
+            if (evidence == null)
+            {
+                return 0;
+            }
+
+            var count = 0;
+            foreach (var item in evidence)
+            {
+                if (item != null && item.ProbeMode == probeMode)
+                {
+                    count++;
+                }
+            }
+
+            return count;
         }
     }
 }
