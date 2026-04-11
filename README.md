@@ -21,10 +21,19 @@ The add-in does not ship its own model access. It checks the local Codex CLI ses
 - answer conversational prompts inside Revit
 - inspect document, view, selection, linked-model, and parameter context
 - run up to 3 read-only probes before proposing a write
+- on the `spike-visual-probe` branch, capture active-view screenshots as visual evidence when semantic model data is not enough
 - generate and compile C# against real Revit references
 - preview bounded edits before approval
 - execute approved writes inside host-owned Revit transactions
 - analyze failed write executions and failed read-only probes automatically
+
+## Visual probe spike
+
+The `spike-visual-probe` branch experiments with giving Codex a rendered view of the active Revit view, not just semantic BIM data. A normal semantic probe can tell Codex element ids, categories, parameters, counts, selection state, and geometry-like metadata. A visual probe is different: it captures a screenshot of the active view and stores it with the run artifacts so Codex can reason about visual issues such as tag clutter, text readability, visible overlap, leader congestion, and whether a layout simply "looks wrong" on screen.
+
+Visual probe is intentionally gated. Codex must request `probeMode = visual` and explain why semantic evidence is insufficient. The host keeps a separate visual-probe budget from normal read-only inspection probes, captures the image through Revit, writes `visual-probe-full.png` and `visual-probe-metadata.json` into the artifact folder, then sends the image back through the Codex app-server path for the next planning turn.
+
+This is still a spike, not a polished feature. Today's tests showed that visual probe works technically, but it is expensive and not always more effective than good semantic probing. The image can help Codex notice clutter, but it does not directly identify exact Revit element ids or safe edit targets. In practice, visual probe is best treated as a high-cost diagnostic tool for selected or tightly scoped visual layout problems, not as a default planning step for every prompt.
 
 ## Current design
 
