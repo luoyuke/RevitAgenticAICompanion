@@ -36,7 +36,7 @@ namespace RevitAgenticAICompanion.Storage
     selected_element_ids_json, selected_category_names_json, available_category_count,
     validation_is_valid, compilation_is_success, undo_hostile, is_approved,
     preview_is_success, preview_summary, preview_target_element_ids_json, preview_error,
-    transaction_names_json, assumptions_json, probe_count, probe_evidence_json, project_conventions_json, discovered_conventions_json, diagnostics_json)
+    transaction_names_json, assumptions_json, probe_count, probe_evidence_json, project_conventions_json, discovered_conventions_json, runtime_invocation_json, diagnostics_json)
 VALUES (
     $run_id, COALESCE((SELECT created_utc FROM audit_runs WHERE run_id = $run_id), $now), $now,
     $proposal_kind, $planner_name, $repair_count,
@@ -45,7 +45,7 @@ VALUES (
     $selected_element_ids_json, $selected_category_names_json, $available_category_count,
     $validation_is_valid, $compilation_is_success, $undo_hostile, $is_approved,
     $preview_is_success, $preview_summary, $preview_target_element_ids_json, $preview_error,
-    $transaction_names_json, $assumptions_json, $probe_count, $probe_evidence_json, $project_conventions_json, $discovered_conventions_json, $diagnostics_json)
+    $transaction_names_json, $assumptions_json, $probe_count, $probe_evidence_json, $project_conventions_json, $discovered_conventions_json, $runtime_invocation_json, $diagnostics_json)
 ON CONFLICT(run_id) DO UPDATE SET
     updated_utc = excluded.updated_utc,
     proposal_kind = excluded.proposal_kind,
@@ -82,6 +82,7 @@ ON CONFLICT(run_id) DO UPDATE SET
     probe_evidence_json = excluded.probe_evidence_json,
     project_conventions_json = excluded.project_conventions_json,
     discovered_conventions_json = excluded.discovered_conventions_json,
+    runtime_invocation_json = excluded.runtime_invocation_json,
     diagnostics_json = excluded.diagnostics_json;";
 
                     BindPlanningParameters(command, session);
@@ -160,6 +161,55 @@ WHERE run_id = $run_id;";
             }
         }
 
+        public void WriteRuntimeFailure(string prompt, RevitContextSnapshot snapshot, CodexRuntimeFailureRecord failureRecord)
+        {
+            if (failureRecord == null)
+            {
+                return;
+            }
+
+            using (var connection = new SqliteConnection(_connectionString))
+            {
+                connection.Open();
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText =
+@"INSERT INTO runtime_failures (
+    event_id, created_utc, stage, message, detail, user_prompt,
+    document_title, document_path, active_view_name, document_fingerprint,
+    executable_path, cli_version, config_path, config_model, config_reasoning_effort,
+    command_text, exit_code, stdout_summary, stderr_summary, artifact_directory, runtime_invocation_json)
+VALUES (
+    $event_id, $created_utc, $stage, $message, $detail, $user_prompt,
+    $document_title, $document_path, $active_view_name, $document_fingerprint,
+    $executable_path, $cli_version, $config_path, $config_model, $config_reasoning_effort,
+    $command_text, $exit_code, $stdout_summary, $stderr_summary, $artifact_directory, $runtime_invocation_json);";
+                    command.Parameters.AddWithValue("$event_id", failureRecord.EventId);
+                    command.Parameters.AddWithValue("$created_utc", failureRecord.OccurredUtc.ToString("O"));
+                    command.Parameters.AddWithValue("$stage", failureRecord.Stage ?? string.Empty);
+                    command.Parameters.AddWithValue("$message", failureRecord.Message ?? string.Empty);
+                    command.Parameters.AddWithValue("$detail", failureRecord.Detail ?? string.Empty);
+                    command.Parameters.AddWithValue("$user_prompt", prompt ?? string.Empty);
+                    command.Parameters.AddWithValue("$document_title", snapshot?.DocumentTitle ?? string.Empty);
+                    command.Parameters.AddWithValue("$document_path", snapshot?.DocumentPath ?? string.Empty);
+                    command.Parameters.AddWithValue("$active_view_name", snapshot?.ActiveViewName ?? string.Empty);
+                    command.Parameters.AddWithValue("$document_fingerprint", snapshot?.Fingerprint?.ToString() ?? string.Empty);
+                    command.Parameters.AddWithValue("$executable_path", failureRecord.ExecutablePath ?? string.Empty);
+                    command.Parameters.AddWithValue("$cli_version", failureRecord.CliVersion ?? string.Empty);
+                    command.Parameters.AddWithValue("$config_path", failureRecord.ConfigPath ?? string.Empty);
+                    command.Parameters.AddWithValue("$config_model", failureRecord.ConfigModel ?? string.Empty);
+                    command.Parameters.AddWithValue("$config_reasoning_effort", failureRecord.ConfigReasoningEffort ?? string.Empty);
+                    command.Parameters.AddWithValue("$command_text", failureRecord.Command ?? string.Empty);
+                    command.Parameters.AddWithValue("$exit_code", failureRecord.ExitCode.HasValue ? (object)failureRecord.ExitCode.Value : DBNull.Value);
+                    command.Parameters.AddWithValue("$stdout_summary", failureRecord.StdoutSummary ?? string.Empty);
+                    command.Parameters.AddWithValue("$stderr_summary", failureRecord.StderrSummary ?? string.Empty);
+                    command.Parameters.AddWithValue("$artifact_directory", failureRecord.ArtifactDirectory ?? string.Empty);
+                    command.Parameters.AddWithValue("$runtime_invocation_json", JsonSerializer.Serialize(failureRecord.RuntimeInvocationSummary));
+                    command.ExecuteNonQuery();
+                }
+            }
+        }
+
         private void EnsureCreated()
         {
             using (var connection = new SqliteConnection(_connectionString))
@@ -208,6 +258,7 @@ WHERE run_id = $run_id;";
     probe_evidence_json TEXT NOT NULL DEFAULT '[]',
     project_conventions_json TEXT NOT NULL DEFAULT '[]',
     discovered_conventions_json TEXT NOT NULL DEFAULT '[]',
+    runtime_invocation_json TEXT NOT NULL DEFAULT '{}',
     failure_stage TEXT NULL,
     failure_exception_type TEXT NULL,
     failure_exception_message TEXT NULL,
@@ -219,6 +270,35 @@ WHERE run_id = $run_id;";
     diagnostics_json TEXT NOT NULL
 );";
                     command.ExecuteNonQuery();
+                }
+
+                using (var runtimeCommand = connection.CreateCommand())
+                {
+                    runtimeCommand.CommandText =
+@"CREATE TABLE IF NOT EXISTS runtime_failures (
+    event_id TEXT PRIMARY KEY,
+    created_utc TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    message TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    user_prompt TEXT NOT NULL,
+    document_title TEXT NOT NULL,
+    document_path TEXT NOT NULL,
+    active_view_name TEXT NOT NULL DEFAULT '',
+    document_fingerprint TEXT NOT NULL DEFAULT '',
+    executable_path TEXT NOT NULL,
+    cli_version TEXT NOT NULL,
+    config_path TEXT NOT NULL,
+    config_model TEXT NOT NULL,
+    config_reasoning_effort TEXT NOT NULL,
+    command_text TEXT NOT NULL,
+    exit_code INTEGER NULL,
+    stdout_summary TEXT NOT NULL,
+    stderr_summary TEXT NOT NULL,
+    artifact_directory TEXT NOT NULL,
+    runtime_invocation_json TEXT NOT NULL DEFAULT '{}'
+);";
+                    runtimeCommand.ExecuteNonQuery();
                 }
 
                 EnsureColumn(connection, "audit_runs", "active_view_name", "TEXT NOT NULL DEFAULT ''");
@@ -240,11 +320,13 @@ WHERE run_id = $run_id;";
                 EnsureColumn(connection, "audit_runs", "probe_evidence_json", "TEXT NOT NULL DEFAULT '[]'");
                 EnsureColumn(connection, "audit_runs", "project_conventions_json", "TEXT NOT NULL DEFAULT '[]'");
                 EnsureColumn(connection, "audit_runs", "discovered_conventions_json", "TEXT NOT NULL DEFAULT '[]'");
+                EnsureColumn(connection, "audit_runs", "runtime_invocation_json", "TEXT NOT NULL DEFAULT '{}'");
                 EnsureColumn(connection, "audit_runs", "failure_stage", "TEXT NULL");
                 EnsureColumn(connection, "audit_runs", "failure_exception_type", "TEXT NULL");
                 EnsureColumn(connection, "audit_runs", "failure_exception_message", "TEXT NULL");
                 EnsureColumn(connection, "audit_runs", "failure_packet_json", "TEXT NULL");
                 EnsureColumn(connection, "audit_runs", "failure_analysis_run_id", "TEXT NULL");
+                EnsureColumn(connection, "runtime_failures", "runtime_invocation_json", "TEXT NOT NULL DEFAULT '{}'");
             }
         }
 
@@ -288,6 +370,7 @@ WHERE run_id = $run_id;";
             command.Parameters.AddWithValue("$probe_evidence_json", JsonSerializer.Serialize(session.RetrievedEvidence ?? Array.Empty<ProbeEvidence>()));
             command.Parameters.AddWithValue("$project_conventions_json", "[]");
             command.Parameters.AddWithValue("$discovered_conventions_json", "[]");
+            command.Parameters.AddWithValue("$runtime_invocation_json", JsonSerializer.Serialize(session.RuntimeInvocation));
             command.Parameters.AddWithValue("$diagnostics_json", JsonSerializer.Serialize(session.CompilationResult?.Diagnostics ?? Array.Empty<string>()));
         }
 

@@ -24,7 +24,10 @@ namespace RevitAgenticAICompanion.Runtime
             return Task.FromResult(new LoginStartResult(false, string.Empty, "Local review mode does not use Codex sign-in."));
         }
 
-        public Task<ProposalCandidate> CreateProposalAsync(PlanningRequest request, CancellationToken cancellationToken)
+        public Task<ProposalCandidate> CreateProposalAsync(
+            PlanningRequest request,
+            RuntimeInvocationOptions runtimeOptions,
+            CancellationToken cancellationToken)
         {
             if (request == null)
             {
@@ -82,6 +85,7 @@ namespace RevitAgenticAICompanion.Runtime
             PlanningRequest request,
             ProposalCandidate failedProposal,
             GeneratedActionCompilationResult compilation,
+            RuntimeInvocationOptions runtimeOptions,
             CancellationToken cancellationToken)
         {
             return Task.FromResult(failedProposal);
@@ -91,6 +95,7 @@ namespace RevitAgenticAICompanion.Runtime
             PlanningRequest request,
             ProposalCandidate failedProposal,
             ExecutionFailurePacket failurePacket,
+            RuntimeInvocationOptions runtimeOptions,
             CancellationToken cancellationToken)
         {
             var explanation = "Execution failed in local review mode. " +

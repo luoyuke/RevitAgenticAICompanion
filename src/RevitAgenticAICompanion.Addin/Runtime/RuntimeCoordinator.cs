@@ -62,15 +62,21 @@ namespace RevitAgenticAICompanion.Runtime
             return _agentRuntimeClient.StartLoginAsync(cancellationToken);
         }
 
-        public async Task<PlanningSession> CreateProposalAsync(string prompt, CancellationToken cancellationToken)
+        public async Task<PlanningSession> CreateProposalAsync(
+            string prompt,
+            RuntimeInvocationOptions runtimeOptions,
+            CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(prompt))
             {
                 throw new InvalidOperationException("A prompt is required.");
             }
 
+            runtimeOptions = runtimeOptions ?? RuntimeInvocationOptions.Default;
+            var runtimeStatus = await _agentRuntimeClient.GetStatusAsync(cancellationToken);
+            var runtimeSummary = runtimeOptions.CreateSummary(runtimeStatus.Detail);
             var snapshot = await _dispatcher.Enqueue(new CaptureContextSnapshotRequest(_documentStateTracker));
-            var memorySession = TryHandleMemoryCommand(prompt, snapshot);
+            var memorySession = TryHandleMemoryCommand(prompt, snapshot, runtimeOptions, runtimeSummary);
             if (memorySession != null)
             {
                 CurrentSession = memorySession;
@@ -86,111 +92,119 @@ namespace RevitAgenticAICompanion.Runtime
                 maxProbeCount: MaxInspectionProbes);
             var planningStopwatch = Stopwatch.StartNew();
 
-            while (true)
+            try
             {
-                // The host owns the outer loop so Codex can inspect in bounded steps without
-                // getting stuck in an unbounded "probe forever" cycle.
-                if (planningStopwatch.Elapsed >= PlanningBudget)
+                while (true)
                 {
-                    var timeoutProposal = ProposalCandidate.CreateReply(
-                        prompt,
-                        BuildBudgetExceededMessage(planningRequest, planningStopwatch.Elapsed),
-                        "reply",
-                        "low",
-                        "Planning paused after bounded inspection.",
-                        "low",
-                        Array.Empty<string>(),
-                        new ProposalProvenance("Host timeout", 0));
-                    CurrentSession = BuildSession(snapshot, planningRequest, timeoutProposal, new ValidationReport(), GeneratedActionCompilationResult.NotApplicable());
-                    _auditStore.WritePlanning(CurrentSession);
-                    return CurrentSession;
-                }
-
-                var proposal = await _agentRuntimeClient.CreateProposalAsync(planningRequest, cancellationToken);
-                proposal.SourceHash = ComputeSourceHash(proposal.GeneratedSource);
-
-                var validation = new ValidationReport();
-                var compilation = GeneratedActionCompilationResult.NotApplicable();
-                if (proposal.RequiresCompilation)
-                {
-                    validation = _validator.Validate(proposal);
-                    validation.IsUndoHostile |= proposal.IsUndoHostile;
-                    compilation = _compiler.Compile(proposal);
-                    if (!compilation.IsSuccess)
+                    // The host owns the outer loop so Codex can inspect in bounded steps without
+                    // getting stuck in an unbounded "probe forever" cycle.
+                    if (planningStopwatch.Elapsed >= PlanningBudget)
                     {
-                        proposal = await _agentRuntimeClient.RepairProposalAsync(planningRequest, proposal, compilation, cancellationToken);
-                        proposal.SourceHash = ComputeSourceHash(proposal.GeneratedSource);
-                        validation = _validator.Validate(proposal);
-                        validation.IsUndoHostile |= proposal.IsUndoHostile;
-                        compilation = proposal.RequiresCompilation
-                            ? _compiler.Compile(proposal)
-                            : GeneratedActionCompilationResult.NotApplicable();
-                    }
-
-                    if (!compilation.IsSuccess)
-                    {
-                        validation.Errors.Add("Generated code failed compilation.");
-                    }
-                }
-
-                proposal.ArtifactDirectory = _artifactStore.WriteProposal(snapshot, planningRequest, proposal, validation, compilation);
-                var session = BuildSession(snapshot, planningRequest, proposal, validation, compilation);
-
-                if (proposal.ContinuesPlanning)
-                {
-                    if (planningRequest.CompletedProbeCount >= planningRequest.MaxProbeCount)
-                    {
-                        var probeLimitProposal = ProposalCandidate.CreateReply(
+                        var timeoutProposal = ProposalCandidate.CreateReply(
                             prompt,
-                            BuildProbeLimitMessage(planningRequest),
+                            BuildBudgetExceededMessage(planningRequest, planningStopwatch.Elapsed),
                             "reply",
                             "low",
                             "Planning paused after bounded inspection.",
                             "low",
                             Array.Empty<string>(),
-                            new ProposalProvenance("Host probe limit", proposal.Provenance?.RepairCount ?? 0));
-                        CurrentSession = BuildSession(snapshot, planningRequest, probeLimitProposal, new ValidationReport(), GeneratedActionCompilationResult.NotApplicable());
+                            new ProposalProvenance("Host timeout", 0));
+                        CurrentSession = BuildSession(snapshot, planningRequest, timeoutProposal, new ValidationReport(), GeneratedActionCompilationResult.NotApplicable(), runtimeOptions, runtimeSummary);
                         _auditStore.WritePlanning(CurrentSession);
                         return CurrentSession;
                     }
 
-                    if (!validation.IsValid || !compilation.IsSuccess)
+                    var proposal = await _agentRuntimeClient.CreateProposalAsync(planningRequest, runtimeOptions, cancellationToken);
+                    proposal.SourceHash = ComputeSourceHash(proposal.GeneratedSource);
+
+                    var validation = new ValidationReport();
+                    var compilation = GeneratedActionCompilationResult.NotApplicable();
+                    if (proposal.RequiresCompilation)
                     {
-                        CurrentSession = session;
-                        _auditStore.WritePlanning(CurrentSession);
-                        return CurrentSession;
+                        validation = _validator.Validate(proposal);
+                        validation.IsUndoHostile |= proposal.IsUndoHostile;
+                        compilation = _compiler.Compile(proposal);
+                        if (!compilation.IsSuccess)
+                        {
+                            proposal = await _agentRuntimeClient.RepairProposalAsync(planningRequest, proposal, compilation, runtimeOptions, cancellationToken);
+                            proposal.SourceHash = ComputeSourceHash(proposal.GeneratedSource);
+                            validation = _validator.Validate(proposal);
+                            validation.IsUndoHostile |= proposal.IsUndoHostile;
+                            compilation = proposal.RequiresCompilation
+                                ? _compiler.Compile(proposal)
+                                : GeneratedActionCompilationResult.NotApplicable();
+                        }
+
+                        if (!compilation.IsSuccess)
+                        {
+                            validation.Errors.Add("Generated code failed compilation.");
+                        }
                     }
 
-                    var probeExecution = await _dispatcher.Enqueue(new ExecuteReadOnlyProposalRequest(session, _executor));
-                    session.ExecutionResult = probeExecution;
-                    _artifactStore.WriteExecution(session, probeExecution);
-                    _auditStore.WritePlanning(session);
-                    _auditStore.WriteExecution(session, probeExecution);
+                    proposal.ArtifactDirectory = _artifactStore.WriteProposal(snapshot, planningRequest, proposal, validation, compilation, runtimeSummary);
+                    var session = BuildSession(snapshot, planningRequest, proposal, validation, compilation, runtimeOptions, runtimeSummary);
 
-                    if (!probeExecution.IsSuccess)
+                    if (proposal.ContinuesPlanning)
                     {
-                        CurrentSession = await HandleFailureAnalysisAsync(session, probeExecution, "probe");
-                        return CurrentSession;
+                        if (planningRequest.CompletedProbeCount >= planningRequest.MaxProbeCount)
+                        {
+                            var probeLimitProposal = ProposalCandidate.CreateReply(
+                                prompt,
+                                BuildProbeLimitMessage(planningRequest),
+                                "reply",
+                                "low",
+                                "Planning paused after bounded inspection.",
+                                "low",
+                                Array.Empty<string>(),
+                                new ProposalProvenance("Host probe limit", proposal.Provenance?.RepairCount ?? 0));
+                            CurrentSession = BuildSession(snapshot, planningRequest, probeLimitProposal, new ValidationReport(), GeneratedActionCompilationResult.NotApplicable(), runtimeOptions, runtimeSummary);
+                            _auditStore.WritePlanning(CurrentSession);
+                            return CurrentSession;
+                        }
+
+                        if (!validation.IsValid || !compilation.IsSuccess)
+                        {
+                            CurrentSession = session;
+                            _auditStore.WritePlanning(CurrentSession);
+                            return CurrentSession;
+                        }
+
+                        var probeExecution = await _dispatcher.Enqueue(new ExecuteReadOnlyProposalRequest(session, _executor));
+                        session.ExecutionResult = probeExecution;
+                        _artifactStore.WriteExecution(session, probeExecution);
+                        _auditStore.WritePlanning(session);
+                        _auditStore.WriteExecution(session, probeExecution);
+
+                        if (!probeExecution.IsSuccess)
+                        {
+                            CurrentSession = await HandleFailureAnalysisAsync(session, probeExecution, "probe");
+                            return CurrentSession;
+                        }
+
+                        // Probe output becomes authoritative turn-local evidence for the next Codex step.
+                        var evidence = new ProbeEvidence(
+                            proposal.ProposalId,
+                            planningRequest.CompletedProbeCount + 1,
+                            proposal.ProbePurpose,
+                            proposal.ProbeQuestion,
+                            probeExecution.Summary,
+                            probeExecution.ChangedElementIds,
+                            proposal.SourceHash,
+                            proposal.ArtifactDirectory);
+                        planningRequest = planningRequest.WithEvidence(evidence, userPreferences);
+                        continue;
                     }
 
-                    // Probe output becomes authoritative turn-local evidence for the next Codex step.
-                    var evidence = new ProbeEvidence(
-                        proposal.ProposalId,
-                        planningRequest.CompletedProbeCount + 1,
-                        proposal.ProbePurpose,
-                        proposal.ProbeQuestion,
-                        probeExecution.Summary,
-                        probeExecution.ChangedElementIds,
-                        proposal.SourceHash,
-                        proposal.ArtifactDirectory);
-                    planningRequest = planningRequest.WithEvidence(evidence, userPreferences);
-                    continue;
+                    CurrentSession = session;
+
+                    await FinalizeSessionAsync(CurrentSession);
+                    return CurrentSession;
                 }
-
-                CurrentSession = session;
-
-                await FinalizeSessionAsync(CurrentSession);
-                return CurrentSession;
+            }
+            catch (CodexRuntimeException ex)
+            {
+                PersistRuntimeFailure(prompt, snapshot, ex);
+                throw;
             }
         }
 
@@ -297,6 +311,8 @@ namespace RevitAgenticAICompanion.Runtime
             ProposalCandidate proposal,
             ValidationReport validation,
             GeneratedActionCompilationResult compilation,
+            RuntimeInvocationOptions runtimeOptions,
+            RuntimeInvocationSummary runtimeInvocation,
             ExecutionFailurePacket failurePacket = null)
         {
             return new PlanningSession(
@@ -306,6 +322,8 @@ namespace RevitAgenticAICompanion.Runtime
                 snapshot,
                 planningRequest?.RetrievedEvidence ?? Array.Empty<ProbeEvidence>(),
                 planningRequest?.UserPreferences ?? Array.Empty<UserPreferenceRecord>(),
+                runtimeOptions,
+                runtimeInvocation,
                 failurePacket);
         }
 
@@ -334,7 +352,11 @@ namespace RevitAgenticAICompanion.Runtime
                 ". Clarify the target or ask me to continue with these assumptions.";
         }
 
-        private PlanningSession TryHandleMemoryCommand(string prompt, RevitContextSnapshot snapshot)
+        private PlanningSession TryHandleMemoryCommand(
+            string prompt,
+            RevitContextSnapshot snapshot,
+            RuntimeInvocationOptions runtimeOptions,
+            RuntimeInvocationSummary runtimeSummary)
         {
             var trimmedPrompt = (prompt ?? string.Empty).Trim();
             if (!trimmedPrompt.StartsWith(MemoryCommandPrefix, StringComparison.OrdinalIgnoreCase))
@@ -406,8 +428,8 @@ namespace RevitAgenticAICompanion.Runtime
             proposal.SourceHash = ComputeSourceHash(proposal.GeneratedSource);
             var validation = new ValidationReport();
             var compilation = GeneratedActionCompilationResult.NotApplicable();
-            proposal.ArtifactDirectory = _artifactStore.WriteProposal(snapshot, planningRequest, proposal, validation, compilation);
-            return BuildSession(snapshot, planningRequest, proposal, validation, compilation);
+            proposal.ArtifactDirectory = _artifactStore.WriteProposal(snapshot, planningRequest, proposal, validation, compilation, runtimeSummary);
+            return BuildSession(snapshot, planningRequest, proposal, validation, compilation, runtimeOptions, runtimeSummary);
         }
 
         private string BuildMemoryListReply()
@@ -528,11 +550,21 @@ namespace RevitAgenticAICompanion.Runtime
                 failedSession.RetrievedEvidence?.Count ?? 0,
                 MaxInspectionProbes);
 
-            var analyzedProposal = await _agentRuntimeClient.AnalyzeFailureAsync(
-                planningRequest,
-                failedSession.Proposal,
-                failurePacket,
-                CancellationToken.None);
+            ProposalCandidate analyzedProposal;
+            try
+            {
+                analyzedProposal = await _agentRuntimeClient.AnalyzeFailureAsync(
+                    planningRequest,
+                    failedSession.Proposal,
+                    failurePacket,
+                    failedSession.RuntimeOptions,
+                    CancellationToken.None);
+            }
+            catch (CodexRuntimeException ex)
+            {
+                PersistRuntimeFailure(failedSession.Proposal?.UserPrompt, failedSession.ContextSnapshot, ex);
+                throw;
+            }
             analyzedProposal.SourceHash = ComputeSourceHash(analyzedProposal.GeneratedSource);
 
             var validation = new ValidationReport();
@@ -544,7 +576,12 @@ namespace RevitAgenticAICompanion.Runtime
                 compilation = _compiler.Compile(analyzedProposal);
                 if (!compilation.IsSuccess)
                 {
-                    analyzedProposal = await _agentRuntimeClient.RepairProposalAsync(planningRequest, analyzedProposal, compilation, CancellationToken.None);
+                    analyzedProposal = await _agentRuntimeClient.RepairProposalAsync(
+                        planningRequest,
+                        analyzedProposal,
+                        compilation,
+                        failedSession.RuntimeOptions,
+                        CancellationToken.None);
                     analyzedProposal.SourceHash = ComputeSourceHash(analyzedProposal.GeneratedSource);
                     validation = _validator.Validate(analyzedProposal);
                     validation.IsUndoHostile |= analyzedProposal.IsUndoHostile;
@@ -565,6 +602,7 @@ namespace RevitAgenticAICompanion.Runtime
                 analyzedProposal,
                 validation,
                 compilation,
+                failedSession.RuntimeInvocation,
                 failurePacket);
 
             var analysisSession = BuildSession(
@@ -573,10 +611,28 @@ namespace RevitAgenticAICompanion.Runtime
                 analyzedProposal,
                 validation,
                 compilation,
+                failedSession.RuntimeOptions,
+                failedSession.RuntimeInvocation,
                 failurePacket);
 
             await FinalizeSessionAsync(analysisSession);
             return analysisSession;
+        }
+
+        private void PersistRuntimeFailure(string prompt, RevitContextSnapshot snapshot, CodexRuntimeException exception)
+        {
+            var failureRecord = exception?.FailureRecord;
+            if (failureRecord == null)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(failureRecord.ArtifactDirectory))
+            {
+                failureRecord.ArtifactDirectory = _artifactStore.WriteRuntimeFailure(prompt, snapshot, failureRecord);
+            }
+
+            _auditStore.WriteRuntimeFailure(prompt, snapshot, failureRecord);
         }
 
         private static string ComputeSourceHash(string source)

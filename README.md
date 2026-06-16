@@ -1,61 +1,89 @@
 # Revit Agentic AI Companion
 
-Revit Agentic AI Companion is a hobby Revit 2026 add-in that lets you talk to your model like it’s a coworker… except this coworker can write code, run transactions, and occasionally make questionable life choices.It is a dockable chat pane with bounded Revit execution. It lets Codex inspect the live model, propose generated C# actions, and execute approved edits through host-owned Revit requests.
+Revit Agentic AI Companion is an experimental Revit 2026 add-in that puts a Codex-powered chat pane inside Revit. It can inspect the live model, ask for more evidence, generate C# against the Revit API, preview bounded edits, and execute approved changes through host-owned Revit transactions.
 
-It’s past proof-of-concept and already does real work — but it’s still very much an experiment. It now supports multi-step inspection-first planning, read-only BIM queries, bounded write proposals, preview and approval before writes, and local audit/artifact review after each run.
-
-If your model gets nuked, tell me so I can also laugh about it.
+It is past pure proof-of-concept and can already do useful BIM work, but it is still a research/demo project. Expect failures, inspect the artifacts, and test on disposable copies before trusting it near serious production models.
 
 ## Prerequisites
 
-Before the add-in can do anything useful, you need:
+- Autodesk Revit 2026 on Windows.
+- The Codex desktop app, or a working Codex CLI installation.
+- A ChatGPT/OpenAI account signed in through the local Codex runtime.
+- .NET SDK 8+ if you want to build from source.
 
-- Autodesk Revit 2026
-- Codex CLI installed on the machine
-- a ChatGPT or OpenAI account that can sign in through `codex login`
+The add-in does not ship model access or credentials. It uses the local Codex runtime already installed for the current Windows user and checks sign-in with `codex login status`.
 
-The add-in does not ship its own model access. It checks the local Codex CLI session with `codex login status`, and if needed starts the browser sign-in flow with `codex login`.
+## Codex Runtime Resolution
 
-## What it can do
+The add-in resolves Codex at runtime instead of hardcoding a user path. Candidate executables are validated by running `codex --version`; broken WindowsApps aliases or stale binaries are skipped.
 
-- answer conversational prompts inside Revit
-- inspect document, view, selection, linked-model, and parameter context
-- run up to 3 read-only probes before proposing a write
-- generate and compile C# against real Revit references
-- preview bounded edits before approval
-- execute approved writes inside host-owned Revit transactions
-- analyze failed write executions and failed read-only probes automatically
+Resolution order:
 
-## Current design
+- `REVIT_AGENTIC_AI_CODEX_PATH`, if explicitly set.
+- Newest working Codex app runtime under `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe`.
+- Working `codex.exe` or `codex` found on `PATH`, useful for npm/global CLI installs.
+- Legacy `%USERPROFILE%\.codex\.sandbox-bin\codex.exe` fallback.
+
+The runtime status shown in the add-in and artifacts records the selected executable, CLI version, resolver source, configured model, configured reasoning effort, known local model catalog, and whether CLI overrides are supported.
+
+## Runtime Profiles
+
+The dockable pane includes a compact runtime selector:
+
+- `Codex default`: inherit Codex config/defaults.
+- `Fast`: use the configured/default model with low reasoning.
+- `Balanced`: use the configured/default model with medium reasoning.
+- `Deep`: use the configured/default model with high reasoning.
+
+The add-in currently does not expose raw model IDs in the UI and does not mutate `%USERPROFILE%\.codex\config.toml`. To change the default model, update Codex's own config or app settings. Runtime profiles only override reasoning effort when the active Codex binary supports `--config`.
+
+## What It Can Do
+
+- Answer conversational prompts inside Revit.
+- Inspect document, view, selection, category, parameter, schedule, and linked-model context.
+- Run bounded read-only inspection probes before proposing a write.
+- Generate and compile C# against Revit 2026 references.
+- Preview bounded edits before approval.
+- Execute approved writes inside host-owned Revit transactions.
+- Capture compact failure packets and ask Codex for failure analysis or repair proposals.
+- Persist artifacts and audit rows for every run.
+
+Recent test runs have successfully created ductwork-only 3D isometric views, generated ductwork BOQ schedules, and created low-density duct tags in locked 3D views. These are demonstrations, not guarantees.
+
+## Current Design
 
 The host owns Revit access and execution. Codex owns planning.
 
 Host responsibilities:
-- capture context
-- run `ExternalEvent` requests
-- compile, validate, preview, and execute
-- keep approval and confirm gates
-- persist artifacts, audit, and user memory
+
+- Capture Revit context.
+- Run `ExternalEvent` requests.
+- Compile, validate, preview, and execute generated code.
+- Enforce approval and confirmation gates.
+- Persist artifacts, audit rows, runtime diagnostics, and user memory.
 
 Codex responsibilities:
-- interpret prompts
-- request more evidence when needed
-- decide between reply, read-only query, inspection probe, or action proposal
-- generate corrected follow-up plans after failures
 
-## Memory and audit
+- Interpret the user prompt.
+- Decide between reply, read-only query, inspection probe, or action proposal.
+- Request more evidence when model-specific facts are needed.
+- Generate corrected follow-up plans after compile or execution failures.
 
-The current memory model is intentionally small:
+## Memory And Audit
 
-- Codex thread continuity for short conversational context
-- `memory.md` for cross-project user preferences only
-- `audit.db` as a ledger, not retrieval memory
+The current memory model is intentionally tiny:
 
-Memory is read automatically on every prompt and updated only with explicit commands:
+- Codex thread continuity for short conversational context.
+- `memory.md` for cross-project user preferences only.
+- `audit.db` as a ledger, not retrieval memory.
 
-- `/memory`
-- `/memory <key> <value>`
-- `/memory clear <key>`
+Memory is read automatically on every prompt and updated only with explicit slash commands:
+
+```text
+/memory
+/memory <key> <value>
+/memory clear <key>
+```
 
 Allowed keys:
 
@@ -64,64 +92,85 @@ Allowed keys:
 - `approval_style`
 - `inspection_bias`
 
+Project-specific facts should not be stored in memory yet. They belong in the Revit model, artifacts, or a future project-scoped retrieval layer.
+
 ## Build
 
-Build the add-in from the project root:
+Build from the project root:
 
 ```powershell
 dotnet build .\src\RevitAgenticAICompanion.Addin\RevitAgenticAICompanion.Addin.csproj -c Release -p:Platform=x64
 ```
 
-The compiled output lands under:
+Compiled output lands under:
 
-- `src/RevitAgenticAICompanion.Addin/bin/Release/`
+```text
+src\RevitAgenticAICompanion.Addin\bin\Release\
+```
 
-The active packaged payload used for local testing currently lives under:
+The packaged installer payload is copied from that build output into:
 
-- `deploy/UserMemoryMd_2026-03-20/`
+```text
+deploy\Installer_2026-03-21\payload\
+```
 
 ## Install
 
-The repo includes a packaged installer snapshot:
-
-- `deploy/Installer_2026-03-21/`
-
-Run the installer script:
+Use the packaged installer snapshot:
 
 ```powershell
-.\deploy\Installer_2026-03-21\install.ps1
+powershell -ExecutionPolicy Bypass -File .\deploy\Installer_2026-03-21\install.ps1
 ```
 
-What it does:
+Or use the command wrapper:
 
-- copies the packaged payload into `%LOCALAPPDATA%\RevitAgenticAICompanion\install\...`
-- writes the Revit 2026 manifest into `%APPDATA%\Autodesk\Revit\Addins\2026\`
-- seeds `memory.md`
-- seeds an empty `project-threads.json` if missing
+```cmd
+deploy\Installer_2026-03-21\install.cmd
+```
 
-Useful options:
+The installer:
 
-- `-ForceSeed` overwrites the seeded `memory.md`
-- `-ResetThreads` clears stored project thread continuity
+- Copies the payload into `%LOCALAPPDATA%\RevitAgenticAICompanion\install\UserMemoryMd_2026-03-21`.
+- Writes the Revit 2026 manifest into `%APPDATA%\Autodesk\Revit\Addins\2026`.
+- Seeds `memory.md` only if missing, unless `-ForceSeed` is used.
+- Seeds `project-threads.json` only if missing, unless `-ResetThreads` is used.
 
-## Repo layout
+Useful flags:
 
-- `src/RevitAgenticAICompanion.Addin/` - Revit add-in source, runtime, UI, storage, and request handlers
-- `deploy/` - frozen deploy snapshots, installers, and milestone payloads
-- `docs/` - screenshots and lightweight project notes
-- `docs/test-runs/` - captured screenshots from test sessions
+```powershell
+.\deploy\Installer_2026-03-21\install.ps1 -ForceSeed
+.\deploy\Installer_2026-03-21\install.ps1 -ResetThreads
+```
 
-## Notes
+Close and restart Revit after installing or updating the add-in.
 
-- project-specific memory is intentionally disabled for now
-- hopping between unsaved documents can still leak conversational context if Revit documents share the same title, because thread continuity falls back to the document title when no file path exists
-- failures are expected during exploration; the runtime is built to keep them reviewable
-- artifact folders are the best place to inspect a single run in detail
+## Uninstall
 
-Why this exists
-Originally this started as:
-- “How badly can an agentic AI mess up a Revit model?”
-Turns out…  
-it can do some genuinely useful BIM work and might refuse your task due to your bad engineering practices.  
-So now it’s both:
-a chaos experiment and a glimpse of what future BIM workflows might look like
+Use:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\Installer_2026-03-21\uninstall.ps1
+```
+
+The uninstaller removes the Revit manifest and installed payload. State files under `%LOCALAPPDATA%\RevitAgenticAICompanion\state` are intentionally left untouched.
+
+## Repo Layout
+
+- `src/RevitAgenticAICompanion.Addin/`: Revit add-in source, runtime client, UI, storage, and request handlers.
+- `deploy/Installer_2026-03-21/`: packaged installer snapshot and release payload.
+- `deploy/`: older milestone snapshots and deploy history.
+- `docs/`: screenshots and lightweight notes.
+- `docs/test-runs/`: captured screenshots from test sessions.
+
+## Known Caveats
+
+- This is a demo/research add-in, not production BIM automation software.
+- The add-in currently inherits the configured Codex model unless a future model-selection UI is added.
+- Some timing comparisons are approximate because artifacts do not yet isolate pure `codex exec` duration.
+- Hopping between unsaved documents can still leak conversational context if Revit documents share the same title, because thread continuity falls back to document title when no file path exists.
+- User-facing artifact text can still show occasional encoding artifacts in some output paths.
+- Bulk annotation can succeed technically while still producing visually noisy results; review previews and changed element IDs.
+
+## License
+
+This project is released under the MIT License.

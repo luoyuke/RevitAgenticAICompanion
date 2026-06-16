@@ -22,6 +22,7 @@ namespace RevitAgenticAICompanion.Storage
             ProposalCandidate proposal,
             ValidationReport validation,
             GeneratedActionCompilationResult compilation,
+            RuntimeInvocationSummary runtimeInvocation = null,
             ExecutionFailurePacket failurePacket = null)
         {
             var directoryName = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + proposal.ProposalId;
@@ -29,7 +30,7 @@ namespace RevitAgenticAICompanion.Storage
             Directory.CreateDirectory(directory);
 
             File.WriteAllText(Path.Combine(directory, "generated-action.cs"), proposal.GeneratedSource ?? string.Empty, Utf8NoBom);
-            File.WriteAllText(Path.Combine(directory, "summary.txt"), BuildSummary(snapshot, planningRequest, proposal, validation, compilation, failurePacket), Utf8NoBom);
+            File.WriteAllText(Path.Combine(directory, "summary.txt"), BuildSummary(snapshot, planningRequest, proposal, validation, compilation, runtimeInvocation, failurePacket), Utf8NoBom);
             File.WriteAllText(Path.Combine(directory, "compile.txt"), BuildCompilationSummary(compilation), Utf8NoBom);
             if (compilation.AssemblyBytes != null && compilation.AssemblyBytes.Length > 0)
             {
@@ -100,12 +101,91 @@ namespace RevitAgenticAICompanion.Storage
                 Utf8NoBom);
         }
 
+        public string WriteRuntimeFailure(string prompt, RevitContextSnapshot snapshot, CodexRuntimeFailureRecord failureRecord)
+        {
+            if (failureRecord == null)
+            {
+                return string.Empty;
+            }
+
+            var directoryName = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-runtime-" + failureRecord.EventId.Substring(0, 12);
+            var directory = Path.Combine(_paths.ArtifactsPath, directoryName);
+            Directory.CreateDirectory(directory);
+
+            var builder = new StringBuilder();
+            builder.AppendLine("Prompt:");
+            builder.AppendLine(prompt ?? string.Empty);
+            builder.AppendLine();
+            builder.AppendLine("Runtime failure stage:");
+            builder.AppendLine(failureRecord.Stage ?? string.Empty);
+            builder.AppendLine();
+            builder.AppendLine("Message:");
+            builder.AppendLine(failureRecord.Message ?? string.Empty);
+            builder.AppendLine();
+            builder.AppendLine("Detail:");
+            builder.AppendLine(failureRecord.Detail ?? string.Empty);
+            builder.AppendLine();
+            builder.AppendLine("Document:");
+            builder.AppendLine(snapshot?.DocumentTitle ?? string.Empty);
+            builder.AppendLine(snapshot?.DocumentPath ?? string.Empty);
+            builder.AppendLine("Active View: " + (snapshot?.ActiveViewName ?? string.Empty));
+            builder.AppendLine();
+            builder.AppendLine("Executable:");
+            builder.AppendLine(failureRecord.ExecutablePath ?? string.Empty);
+            builder.AppendLine("CLI Version: " + (failureRecord.CliVersion ?? string.Empty));
+            builder.AppendLine("Config Path: " + (failureRecord.ConfigPath ?? string.Empty));
+            builder.AppendLine("Config Model: " + (failureRecord.ConfigModel ?? string.Empty));
+            builder.AppendLine("Config Reasoning Effort: " + (failureRecord.ConfigReasoningEffort ?? string.Empty));
+            builder.AppendLine("Command: " + (failureRecord.Command ?? string.Empty));
+            builder.AppendLine("Exit Code: " + (failureRecord.ExitCode.HasValue ? failureRecord.ExitCode.Value.ToString() : string.Empty));
+            builder.AppendLine();
+            builder.AppendLine("stderr summary:");
+            builder.AppendLine(failureRecord.StderrSummary ?? string.Empty);
+            builder.AppendLine();
+            builder.AppendLine("stdout summary:");
+            builder.AppendLine(failureRecord.StdoutSummary ?? string.Empty);
+            builder.AppendLine();
+            AppendRuntimeInvocation(builder, failureRecord.RuntimeInvocationSummary);
+
+            File.WriteAllText(Path.Combine(directory, "runtime-failure.txt"), builder.ToString(), Utf8NoBom);
+            return directory;
+        }
+
+        private static void AppendRuntimeInvocation(StringBuilder builder, RuntimeInvocationSummary runtimeInvocation)
+        {
+            if (builder == null || runtimeInvocation == null)
+            {
+                return;
+            }
+
+            builder.AppendLine("Runtime Profile:");
+            builder.AppendLine(runtimeInvocation.SelectedProfile);
+            builder.AppendLine("Requested Model:");
+            builder.AppendLine(string.IsNullOrWhiteSpace(runtimeInvocation.RequestedModel) ? "(Codex default)" : runtimeInvocation.RequestedModel);
+            builder.AppendLine("Requested Reasoning Effort:");
+            builder.AppendLine(string.IsNullOrWhiteSpace(runtimeInvocation.RequestedReasoningEffort) ? "(Codex default)" : runtimeInvocation.RequestedReasoningEffort);
+            builder.AppendLine("Used Codex Default Model: " + runtimeInvocation.UsedCodexDefaultModel);
+            builder.AppendLine("Used Codex Default Reasoning: " + runtimeInvocation.UsedCodexDefaultReasoning);
+            builder.AppendLine("Command Override Strategy:");
+            builder.AppendLine(runtimeInvocation.CommandOverrideStrategy);
+            builder.AppendLine("Runtime Status Summary:");
+            builder.AppendLine(runtimeInvocation.RuntimeStatusSummary);
+            if (!string.IsNullOrWhiteSpace(runtimeInvocation.FallbackReason))
+            {
+                builder.AppendLine("Fallback Reason:");
+                builder.AppendLine(runtimeInvocation.FallbackReason);
+            }
+
+            builder.AppendLine();
+        }
+
         private static string BuildSummary(
             RevitContextSnapshot snapshot,
             PlanningRequest planningRequest,
             ProposalCandidate proposal,
             ValidationReport validation,
             GeneratedActionCompilationResult compilation,
+            RuntimeInvocationSummary runtimeInvocation,
             ExecutionFailurePacket failurePacket)
         {
             var builder = new StringBuilder();
@@ -142,6 +222,7 @@ namespace RevitAgenticAICompanion.Storage
             builder.AppendLine("Planner:");
             builder.AppendLine(proposal.Provenance?.Summary ?? "Unknown");
             builder.AppendLine();
+            AppendRuntimeInvocation(builder, runtimeInvocation);
             if (failurePacket != null)
             {
                 builder.AppendLine("Failure Context:");

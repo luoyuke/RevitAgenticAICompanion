@@ -44,12 +44,15 @@ namespace RevitAgenticAICompanion.Runtime
             return await _primary.StartLoginAsync(cancellationToken);
         }
 
-        public async Task<ProposalCandidate> CreateProposalAsync(PlanningRequest request, CancellationToken cancellationToken)
+        public async Task<ProposalCandidate> CreateProposalAsync(
+            PlanningRequest request,
+            RuntimeInvocationOptions runtimeOptions,
+            CancellationToken cancellationToken)
         {
             var primaryStatus = await _primary.GetStatusAsync(cancellationToken);
             if (!primaryStatus.IsAvailable)
             {
-                return await _fallback.CreateProposalAsync(request, cancellationToken);
+                return await _fallback.CreateProposalAsync(request, runtimeOptions, cancellationToken);
             }
 
             if (!primaryStatus.CanPlan)
@@ -57,19 +60,20 @@ namespace RevitAgenticAICompanion.Runtime
                 throw new InvalidOperationException(primaryStatus.Detail);
             }
 
-            return await _primary.CreateProposalAsync(request, cancellationToken);
+            return await _primary.CreateProposalAsync(request, runtimeOptions, cancellationToken);
         }
 
         public async Task<ProposalCandidate> RepairProposalAsync(
             PlanningRequest request,
             ProposalCandidate failedProposal,
             GeneratedActionCompilationResult compilation,
+            RuntimeInvocationOptions runtimeOptions,
             CancellationToken cancellationToken)
         {
             var primaryStatus = await _primary.GetStatusAsync(cancellationToken);
             if (!primaryStatus.IsAvailable)
             {
-                return await _fallback.RepairProposalAsync(request, failedProposal, compilation, cancellationToken);
+                return await _fallback.RepairProposalAsync(request, failedProposal, compilation, runtimeOptions, cancellationToken);
             }
 
             if (!primaryStatus.CanPlan)
@@ -77,19 +81,20 @@ namespace RevitAgenticAICompanion.Runtime
                 throw new InvalidOperationException(primaryStatus.Detail);
             }
 
-            return await _primary.RepairProposalAsync(request, failedProposal, compilation, cancellationToken);
+            return await _primary.RepairProposalAsync(request, failedProposal, compilation, runtimeOptions, cancellationToken);
         }
 
         public async Task<ProposalCandidate> AnalyzeFailureAsync(
             PlanningRequest request,
             ProposalCandidate failedProposal,
             ExecutionFailurePacket failurePacket,
+            RuntimeInvocationOptions runtimeOptions,
             CancellationToken cancellationToken)
         {
             var primaryStatus = await _primary.GetStatusAsync(cancellationToken);
             if (!primaryStatus.IsAvailable)
             {
-                return await _fallback.AnalyzeFailureAsync(request, failedProposal, failurePacket, cancellationToken);
+                return await _fallback.AnalyzeFailureAsync(request, failedProposal, failurePacket, runtimeOptions, cancellationToken);
             }
 
             if (!primaryStatus.CanPlan)
@@ -97,7 +102,7 @@ namespace RevitAgenticAICompanion.Runtime
                 throw new InvalidOperationException(primaryStatus.Detail);
             }
 
-            return await _primary.AnalyzeFailureAsync(request, failedProposal, failurePacket, cancellationToken);
+            return await _primary.AnalyzeFailureAsync(request, failedProposal, failurePacket, runtimeOptions, cancellationToken);
         }
     }
 }

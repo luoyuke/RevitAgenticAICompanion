@@ -19,6 +19,7 @@ namespace RevitAgenticAICompanion.UI
         private readonly WpfTextBox _summaryTextBox;
         private readonly WpfTextBox _sourceTextBox;
         private readonly TextBlock _statusText;
+        private readonly ComboBox _runtimeProfileComboBox;
         private readonly Button _planButton;
         private readonly Button _approveButton;
         private readonly Button _confirmButton;
@@ -41,15 +42,52 @@ namespace RevitAgenticAICompanion.UI
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(120) });
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-            _statusText = new TextBlock
+            var runtimeToolbar = new StackPanel
             {
+                Orientation = Orientation.Horizontal,
                 Margin = new Thickness(8),
-                Text = "Checking runtime status...",
-                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetRow(runtimeToolbar, 0);
+            root.Children.Add(runtimeToolbar);
+
+            runtimeToolbar.Children.Add(new TextBlock
+            {
+                Text = "Runtime:",
+                Margin = new Thickness(0, 0, 6, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                FontFamily = CreateUiFontFamily(),
+            });
+
+            _runtimeProfileComboBox = new ComboBox
+            {
+                Width = 140,
+                Margin = new Thickness(0, 0, 18, 0),
                 FontFamily = CreateUiFontFamily(),
             };
-            Grid.SetRow(_statusText, 0);
-            root.Children.Add(_statusText);
+            AddRuntimeProfileItem("Codex default", RuntimeProfile.CodexDefault, null);
+            AddRuntimeProfileItem("Fast", RuntimeProfile.Fast, null);
+            AddRuntimeProfileItem("Balanced", RuntimeProfile.Balanced, null);
+            AddRuntimeProfileItem("Deep", RuntimeProfile.Deep, "May be slower and use more quota.");
+            _runtimeProfileComboBox.SelectedIndex = 2;
+            runtimeToolbar.Children.Add(_runtimeProfileComboBox);
+
+            runtimeToolbar.Children.Add(new TextBlock
+            {
+                Text = "Codex status:",
+                Margin = new Thickness(0, 0, 6, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                FontFamily = CreateUiFontFamily(),
+            });
+
+            _statusText = new TextBlock
+            {
+                Text = "Checking...",
+                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center,
+                FontFamily = CreateUiFontFamily(),
+            };
+            runtimeToolbar.Children.Add(_statusText);
 
             _promptTextBox = new WpfTextBox
             {
@@ -75,6 +113,7 @@ namespace RevitAgenticAICompanion.UI
             _approveButton = CreateButton("Approve", OnApproveClicked);
             _confirmButton = CreateButton("Confirm", OnConfirmClicked);
 
+            _planButton.IsEnabled = false;
             _approveButton.IsEnabled = false;
             _confirmButton.IsEnabled = false;
 
@@ -138,7 +177,9 @@ namespace RevitAgenticAICompanion.UI
             {
                 SetBusyState(true);
                 AppendLog("Planning from current Revit context...");
-                var session = await _runtimeCoordinator.CreateProposalAsync(_promptTextBox.Text, CancellationToken.None);
+                var runtimeOptions = GetSelectedRuntimeOptions();
+                AppendLog("Runtime profile: " + runtimeOptions.DisplayName);
+                var session = await _runtimeCoordinator.CreateProposalAsync(_promptTextBox.Text, runtimeOptions, CancellationToken.None);
                 ApplySessionToUi(session);
 
                 if (session.FailurePacket != null)
@@ -175,6 +216,11 @@ namespace RevitAgenticAICompanion.UI
                 }
 
                 AppendLog("Artifacts written to: " + session.Proposal.ArtifactDirectory);
+            }
+            catch (CodexRuntimeException ex)
+            {
+                AppendLog("Planning failed: " + ex.Message);
+                AppendRuntimeFailure(ex.FailureRecord);
             }
             catch (Exception ex)
             {
@@ -304,7 +350,8 @@ namespace RevitAgenticAICompanion.UI
                 SetBusyState(true);
                 var status = await _runtimeCoordinator.GetRuntimeStatusAsync(CancellationToken.None);
                 _currentRuntimeStatus = status;
-                _statusText.Text = status.Mode + ": " + status.Detail;
+                _statusText.Text = BuildCodexStatusLabel(status);
+                _statusText.ToolTip = status.Mode + ": " + status.Detail;
                 if (logToPane)
                 {
                     AppendLog("Runtime status: " + status.Mode + ". " + status.Detail);
@@ -313,7 +360,8 @@ namespace RevitAgenticAICompanion.UI
             catch (Exception ex)
             {
                 _currentRuntimeStatus = null;
-                _statusText.Text = "Runtime status unavailable: " + ex.Message;
+                _statusText.Text = "Error";
+                _statusText.ToolTip = "Runtime status unavailable: " + ex.Message;
                 if (logToPane)
                 {
                     AppendLog("Runtime status unavailable: " + ex.Message);
@@ -323,6 +371,44 @@ namespace RevitAgenticAICompanion.UI
             {
                 SetBusyState(false);
             }
+        }
+
+        private void AddRuntimeProfileItem(string label, RuntimeProfile profile, string tooltip)
+        {
+            var item = new ComboBoxItem
+            {
+                Content = label,
+                Tag = profile,
+                ToolTip = tooltip,
+                FontFamily = CreateUiFontFamily(),
+            };
+            _runtimeProfileComboBox.Items.Add(item);
+        }
+
+        private RuntimeInvocationOptions GetSelectedRuntimeOptions()
+        {
+            var selectedItem = _runtimeProfileComboBox.SelectedItem as ComboBoxItem;
+            if (selectedItem?.Tag is RuntimeProfile profile)
+            {
+                return new RuntimeInvocationOptions(profile);
+            }
+
+            return RuntimeInvocationOptions.Default;
+        }
+
+        private static string BuildCodexStatusLabel(AgentRuntimeStatus status)
+        {
+            if (status == null || !status.IsAvailable || !status.IsAuthenticated)
+            {
+                return "Error";
+            }
+
+            if (!status.CanPlan || (status.Detail ?? string.Empty).IndexOf("validation is unavailable", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return "Warning";
+            }
+
+            return "OK";
         }
 
         private void SetBusyState(bool isBusy)
@@ -560,6 +646,46 @@ namespace RevitAgenticAICompanion.UI
                 && session.PreviewResult != null
                 && session.PreviewResult.IsSuccess
                 && session.ValidationReport.IsUndoHostile;
+        }
+
+        private void AppendRuntimeFailure(CodexRuntimeFailureRecord failureRecord)
+        {
+            if (failureRecord == null)
+            {
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(failureRecord.CliVersion))
+            {
+                AppendLog("Codex CLI version: " + failureRecord.CliVersion);
+            }
+
+            if (!string.IsNullOrWhiteSpace(failureRecord.ExecutablePath))
+            {
+                AppendLog("Codex executable: " + failureRecord.ExecutablePath);
+            }
+
+            if (!string.IsNullOrWhiteSpace(failureRecord.ConfigModel) || !string.IsNullOrWhiteSpace(failureRecord.ConfigReasoningEffort))
+            {
+                AppendLog("Codex config: model=" +
+                    (string.IsNullOrWhiteSpace(failureRecord.ConfigModel) ? "(default)" : failureRecord.ConfigModel) +
+                    ", reasoning=" +
+                    (string.IsNullOrWhiteSpace(failureRecord.ConfigReasoningEffort) ? "(default)" : failureRecord.ConfigReasoningEffort));
+            }
+
+            if (failureRecord.ExitCode.HasValue)
+            {
+                AppendLog("Codex exit code: " + failureRecord.ExitCode.Value);
+            }
+
+            if (!string.IsNullOrWhiteSpace(failureRecord.StderrSummary))
+            {
+                AppendLog("Codex stderr: " + failureRecord.StderrSummary);
+            }
+            else if (!string.IsNullOrWhiteSpace(failureRecord.StdoutSummary))
+            {
+                AppendLog("Codex stdout: " + failureRecord.StdoutSummary);
+            }
         }
     }
 }

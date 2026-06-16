@@ -17,6 +17,8 @@ namespace RevitAgenticAICompanion.Runtime
     public sealed class CodexAgentRuntimeClient : IAgentRuntimeClient, IDisposable
     {
         private const string ClientVersion = "0.1.0";
+        private static readonly string[] KnownReasoningEfforts = { "low", "medium", "high", "xhigh" };
+        private static readonly TimeSpan PreflightCacheTtl = TimeSpan.FromSeconds(30);
         private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(20);
         private static readonly TimeSpan StatusTimeout = TimeSpan.FromSeconds(15);
         private static readonly TimeSpan ExecTimeout = TimeSpan.FromMinutes(8);
@@ -24,7 +26,9 @@ namespace RevitAgenticAICompanion.Runtime
         private readonly ProjectThreadStore _threadStore;
         private readonly string _schemaPath;
         private readonly object _schemaGate;
+        private readonly CodexExecutableResolver _executableResolver;
         private readonly SemaphoreSlim _processGate;
+        private readonly SemaphoreSlim _preflightGate;
         private readonly object _notificationGate;
         private readonly ConcurrentDictionary<long, TaskCompletionSource<JsonNode>> _pendingRequests;
         private readonly JsonSerializerOptions _jsonOptions;
@@ -36,6 +40,8 @@ namespace RevitAgenticAICompanion.Runtime
         private bool _isInitialized;
         private string _lastTransportError;
         private Action<string, JsonNode> _notificationHandler;
+        private CodexRuntimeHealthReport _cachedRuntimeHealth;
+        private DateTimeOffset _cachedRuntimeHealthUtc;
 
         public CodexAgentRuntimeClient(LocalStoragePaths paths, ProjectThreadStore threadStore)
         {
@@ -43,7 +49,9 @@ namespace RevitAgenticAICompanion.Runtime
             _threadStore = threadStore;
             _schemaPath = Path.Combine(_paths.StatePath, "codex-output-schema.json");
             _schemaGate = new object();
+            _executableResolver = new CodexExecutableResolver();
             _processGate = new SemaphoreSlim(1, 1);
+            _preflightGate = new SemaphoreSlim(1, 1);
             _notificationGate = new object();
             _pendingRequests = new ConcurrentDictionary<long, TaskCompletionSource<JsonNode>>();
             _jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
@@ -54,34 +62,33 @@ namespace RevitAgenticAICompanion.Runtime
 
         public async Task<AgentRuntimeStatus> GetStatusAsync(CancellationToken cancellationToken)
         {
-            CodexCliResult result;
             try
             {
-                result = await RunCliAsync("login status", null, StatusTimeout, cancellationToken);
+                var health = await GetRuntimeHealthAsync(false, cancellationToken);
+                return new AgentRuntimeStatus(
+                    "Codex",
+                    health.IsAvailable,
+                    health.IsAvailable && health.IsAuthenticated && !health.HasBlockingIssue,
+                    health.IsAuthenticated,
+                    true,
+                    health.Detail,
+                    health);
             }
-            catch (Exception ex)
+            catch (CodexRuntimeException ex)
             {
-                return new AgentRuntimeStatus("Codex", false, false, false, true, "Codex CLI unavailable: " + ex.Message);
+                return new AgentRuntimeStatus("Codex", false, false, false, true, ex.Message);
             }
-
-            var detail = FirstNonEmpty(
-                result.StandardOutput.Trim(),
-                result.StandardError.Trim(),
-                "Codex login status returned no detail.");
-            var isAuthenticated = result.ExitCode == 0 &&
-                detail.IndexOf("logged in", StringComparison.OrdinalIgnoreCase) >= 0;
-
-            return new AgentRuntimeStatus("Codex", true, isAuthenticated, isAuthenticated, true, detail);
         }
 
-        public Task<LoginStartResult> StartLoginAsync(CancellationToken cancellationToken)
+        public async Task<LoginStartResult> StartLoginAsync(CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var resolution = await _executableResolver.ResolveAsync(cancellationToken);
             var process = new Process
             {
                 StartInfo = new ProcessStartInfo
                 {
-                    FileName = ResolveCodexExecutable(),
+                    FileName = resolution.ExecutablePath,
                     Arguments = "login",
                     UseShellExecute = true,
                     CreateNoWindow = false,
@@ -91,35 +98,48 @@ namespace RevitAgenticAICompanion.Runtime
 
             if (!process.Start())
             {
-                return Task.FromResult(new LoginStartResult(false, string.Empty, "Failed to start Codex login."));
+                return new LoginStartResult(false, string.Empty, "Failed to start Codex login.");
             }
 
-            return Task.FromResult(new LoginStartResult(
+            return new LoginStartResult(
                 true,
                 string.Empty,
-                "Codex login started. Complete it in the launched window/browser, then refresh auth."));
+                "Codex login started. Complete it in the launched window/browser, then refresh auth.");
         }
 
-        public async Task<ProposalCandidate> CreateProposalAsync(PlanningRequest request, CancellationToken cancellationToken)
+        public async Task<ProposalCandidate> CreateProposalAsync(
+            PlanningRequest request,
+            RuntimeInvocationOptions runtimeOptions,
+            CancellationToken cancellationToken)
         {
             if (request == null)
             {
                 throw new ArgumentNullException(nameof(request));
             }
 
-            var status = await GetStatusAsync(cancellationToken);
-            if (!status.IsAvailable)
+            runtimeOptions = runtimeOptions ?? RuntimeInvocationOptions.Default;
+            var health = await GetRuntimeHealthAsync(false, cancellationToken);
+            if (!health.IsAvailable)
             {
-                throw new InvalidOperationException(status.Detail);
+                throw CreateRuntimeException("preflight", health.Detail, health, runtimeSummary: (runtimeOptions ?? RuntimeInvocationOptions.Default).CreateSummary(health.Detail));
             }
 
-            if (!status.IsAuthenticated)
+            if (!health.IsAuthenticated)
             {
-                throw new InvalidOperationException("Codex is not signed in. Use Sign in, complete the browser flow, then refresh auth.");
+                throw CreateRuntimeException(
+                    "preflight",
+                    "Codex is not signed in. Use Sign in, complete the browser flow, then refresh auth.",
+                    health,
+                    runtimeSummary: (runtimeOptions ?? RuntimeInvocationOptions.Default).CreateSummary(health.Detail));
+            }
+
+            if (health.HasBlockingIssue)
+            {
+                throw CreateRuntimeException("preflight", health.Detail, health, runtimeSummary: (runtimeOptions ?? RuntimeInvocationOptions.Default).CreateSummary(health.Detail));
             }
 
             var prompt = BuildPlanningPrompt(request);
-            var structuredJson = await RunPlanningTurnAsync(request.ContextSnapshot, prompt, true, cancellationToken);
+            var structuredJson = await RunPlanningTurnAsync(request.ContextSnapshot, prompt, true, runtimeOptions, cancellationToken);
 
             var proposalData = JsonSerializer.Deserialize<CodexPlanningPayload>(structuredJson, _jsonOptions);
             if (proposalData == null)
@@ -134,6 +154,7 @@ namespace RevitAgenticAICompanion.Runtime
             PlanningRequest request,
             ProposalCandidate failedProposal,
             GeneratedActionCompilationResult compilation,
+            RuntimeInvocationOptions runtimeOptions,
             CancellationToken cancellationToken)
         {
             if (request == null)
@@ -151,8 +172,9 @@ namespace RevitAgenticAICompanion.Runtime
                 return failedProposal;
             }
 
+            runtimeOptions = runtimeOptions ?? RuntimeInvocationOptions.Default;
             var prompt = BuildRepairPrompt(request, failedProposal, compilation);
-            var structuredJson = await RunPlanningTurnAsync(request.ContextSnapshot, prompt, false, cancellationToken);
+            var structuredJson = await RunPlanningTurnAsync(request.ContextSnapshot, prompt, false, runtimeOptions, cancellationToken);
 
             var repairedData = JsonSerializer.Deserialize<CodexPlanningPayload>(structuredJson, _jsonOptions);
             if (repairedData == null || !RequiresGeneratedCode(repairedData) || string.IsNullOrWhiteSpace(repairedData.GeneratedSource))
@@ -167,6 +189,7 @@ namespace RevitAgenticAICompanion.Runtime
             PlanningRequest request,
             ProposalCandidate failedProposal,
             ExecutionFailurePacket failurePacket,
+            RuntimeInvocationOptions runtimeOptions,
             CancellationToken cancellationToken)
         {
             if (request == null)
@@ -184,8 +207,9 @@ namespace RevitAgenticAICompanion.Runtime
                 throw new ArgumentNullException(nameof(failurePacket));
             }
 
+            runtimeOptions = runtimeOptions ?? RuntimeInvocationOptions.Default;
             var prompt = BuildFailureAnalysisPrompt(request, failedProposal, failurePacket);
-            var structuredJson = await RunPlanningTurnAsync(request.ContextSnapshot, prompt, true, cancellationToken);
+            var structuredJson = await RunPlanningTurnAsync(request.ContextSnapshot, prompt, true, runtimeOptions, cancellationToken);
 
             var analysisData = JsonSerializer.Deserialize<CodexPlanningPayload>(structuredJson, _jsonOptions);
             if (analysisData == null)
@@ -200,10 +224,155 @@ namespace RevitAgenticAICompanion.Runtime
         {
         }
 
+        private async Task<CodexRuntimeHealthReport> GetRuntimeHealthAsync(bool forceRefresh, CancellationToken cancellationToken)
+        {
+            if (!forceRefresh &&
+                _cachedRuntimeHealth != null &&
+                DateTimeOffset.UtcNow - _cachedRuntimeHealthUtc < PreflightCacheTtl)
+            {
+                return _cachedRuntimeHealth;
+            }
+
+            await _preflightGate.WaitAsync(cancellationToken);
+            try
+            {
+                if (!forceRefresh &&
+                    _cachedRuntimeHealth != null &&
+                    DateTimeOffset.UtcNow - _cachedRuntimeHealthUtc < PreflightCacheTtl)
+                {
+                    return _cachedRuntimeHealth;
+                }
+
+                var executableResolution = await _executableResolver.ResolveAsync(cancellationToken);
+                var executablePath = executableResolution.ExecutablePath;
+                var configPath = GetCodexConfigPath();
+                var configModel = string.Empty;
+                var configReasoningEffort = string.Empty;
+                TryReadConfigSnapshot(configPath, out configModel, out configReasoningEffort);
+
+                var cliVersion = FirstNonEmpty(executableResolution.Version, "unknown");
+
+                var execHelpResult = await RunCliAsync(
+                    "exec --help",
+                    null,
+                    StatusTimeout,
+                    cancellationToken,
+                    "preflight-exec-help",
+                    executablePath,
+                    null);
+                var execHelpText = (execHelpResult.StandardOutput ?? string.Empty) + Environment.NewLine + (execHelpResult.StandardError ?? string.Empty);
+                var supportsModelOverride = execHelpResult.ExitCode == 0 &&
+                    execHelpText.IndexOf("--model", StringComparison.OrdinalIgnoreCase) >= 0;
+                var supportsConfigOverride = execHelpResult.ExitCode == 0 &&
+                    execHelpText.IndexOf("--config", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                var availableModels = Array.Empty<string>();
+                var modelCatalogPath = string.Empty;
+                if (!string.IsNullOrWhiteSpace(configModel))
+                {
+                    TryReadAvailableModels(out availableModels, out modelCatalogPath);
+                }
+
+                var loginResult = await RunCliAsync(
+                    "login status",
+                    null,
+                    StatusTimeout,
+                    cancellationToken,
+                    "login-status",
+                    executablePath,
+                    null);
+
+                var loginDetail = FirstNonEmpty(
+                    loginResult.StandardOutput.Trim(),
+                    loginResult.StandardError.Trim(),
+                    "Codex login status returned no detail.");
+                var isAuthenticated = loginResult.ExitCode == 0 &&
+                    loginDetail.IndexOf("logged in", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                var blockingIssue = string.Empty;
+                if (!string.IsNullOrWhiteSpace(configReasoningEffort) &&
+                    !KnownReasoningEfforts.Contains(configReasoningEffort, StringComparer.OrdinalIgnoreCase))
+                {
+                    blockingIssue = "Configured reasoning effort '" + configReasoningEffort + "' in " + configPath +
+                        " is not recognized by this add-in runtime.";
+                }
+                else if (!string.IsNullOrWhiteSpace(configModel) &&
+                    availableModels.Length > 0 &&
+                    !availableModels.Contains(configModel, StringComparer.OrdinalIgnoreCase))
+                {
+                    blockingIssue = "Configured model '" + configModel + "' in " + configPath +
+                        " is not present in the local Codex model catalog. Update Codex or the config before planning.";
+                }
+
+                var detailBuilder = new StringBuilder();
+                detailBuilder.Append(isAuthenticated ? "Logged in." : loginDetail);
+                var diagnosticSummary = BuildHealthDiagnosticSummary(
+                    executablePath,
+                    cliVersion,
+                    configModel,
+                    configReasoningEffort,
+                    availableModels,
+                    supportsModelOverride,
+                    supportsConfigOverride,
+                    executableResolution.Source);
+                if (!string.IsNullOrWhiteSpace(diagnosticSummary))
+                {
+                    detailBuilder.Append(' ');
+                    detailBuilder.Append(diagnosticSummary);
+                }
+
+                if (!string.IsNullOrWhiteSpace(blockingIssue))
+                {
+                    detailBuilder.Append(' ');
+                    detailBuilder.Append(blockingIssue);
+                }
+                else if (!string.IsNullOrWhiteSpace(configModel) && availableModels.Length == 0)
+                {
+                    detailBuilder.Append(" Model validation is unavailable because no local Codex model catalog was found.");
+                }
+
+                var report = new CodexRuntimeHealthReport(
+                    true,
+                    isAuthenticated,
+                    !string.IsNullOrWhiteSpace(blockingIssue),
+                    detailBuilder.ToString().Trim(),
+                    executablePath,
+                    cliVersion,
+                    configPath,
+                    configModel,
+                    configReasoningEffort,
+                    modelCatalogPath,
+                    availableModels,
+                    supportsModelOverride,
+                    supportsConfigOverride,
+                    executableResolution.Source,
+                    executableResolution.Diagnostics);
+                _cachedRuntimeHealth = report;
+                _cachedRuntimeHealthUtc = DateTimeOffset.UtcNow;
+                return report;
+            }
+            catch (CodexRuntimeException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw CreateRuntimeException(
+                    "preflight",
+                    "Codex runtime preflight failed: " + ex.Message,
+                    BuildFallbackHealth());
+            }
+            finally
+            {
+                _preflightGate.Release();
+            }
+        }
+
         private async Task<string> RunPlanningTurnAsync(
             RevitContextSnapshot snapshot,
             string prompt,
             bool useOutputSchema,
+            RuntimeInvocationOptions runtimeOptions,
             CancellationToken cancellationToken)
         {
             // Thread continuity is scoped per project key so follow-up prompts stay local to the
@@ -213,7 +382,7 @@ namespace RevitAgenticAICompanion.Runtime
 
             try
             {
-                var result = await RunTurnAsync(storedThreadId, prompt, useOutputSchema, cancellationToken);
+                var result = await RunTurnAsync(storedThreadId, prompt, useOutputSchema, runtimeOptions, cancellationToken);
                 if (!string.IsNullOrWhiteSpace(result.ThreadId))
                 {
                     _threadStore.SetThreadId(projectKey, result.ThreadId);
@@ -224,7 +393,7 @@ namespace RevitAgenticAICompanion.Runtime
             catch (InvalidOperationException ex) when (!string.IsNullOrWhiteSpace(storedThreadId) && LooksLikeMissingThread(ex.Message))
             {
                 _threadStore.ClearThreadId(projectKey);
-                var retry = await RunTurnAsync(null, prompt, true, cancellationToken);
+                var retry = await RunTurnAsync(null, prompt, true, runtimeOptions, cancellationToken);
                 if (!string.IsNullOrWhiteSpace(retry.ThreadId))
                 {
                     _threadStore.SetThreadId(projectKey, retry.ThreadId);
@@ -238,8 +407,22 @@ namespace RevitAgenticAICompanion.Runtime
             string threadId,
             string prompt,
             bool useOutputSchema,
+            RuntimeInvocationOptions runtimeOptions,
             CancellationToken cancellationToken)
         {
+            runtimeOptions = runtimeOptions ?? RuntimeInvocationOptions.Default;
+            var health = await GetRuntimeHealthAsync(false, cancellationToken);
+            if (!runtimeOptions.UsesCodexDefaultReasoning && !health.SupportsConfigOverride)
+            {
+                throw CreateRuntimeException(
+                    "profile-override",
+                    "Selected runtime profile requires a Codex CLI config override, but this Codex binary does not advertise --config support.",
+                    health,
+                    runtimeSummary: runtimeOptions.CreateSummary(
+                        health.Detail,
+                        "Reasoning override unavailable because this Codex CLI does not advertise --config support."));
+            }
+
             var args = new StringBuilder();
             var isResume = !string.IsNullOrWhiteSpace(threadId);
             args.Append("exec ");
@@ -250,10 +433,12 @@ namespace RevitAgenticAICompanion.Runtime
                 args.Append("resume ");
                 args.Append(threadId);
                 args.Append(' ');
+                AppendRuntimeOverrideArguments(args, runtimeOptions);
                 args.Append("--skip-git-repo-check --json ");
             }
             else
             {
+                AppendRuntimeOverrideArguments(args, runtimeOptions);
                 args.Append("--skip-git-repo-check --sandbox read-only --json ");
                 if (useOutputSchema)
                 {
@@ -266,13 +451,22 @@ namespace RevitAgenticAICompanion.Runtime
 
             args.Append("- ");
 
-            var result = await RunCliAsync(args.ToString(), prompt ?? string.Empty, ExecTimeout, cancellationToken);
+            var result = await RunCliAsync(
+                args.ToString(),
+                prompt ?? string.Empty,
+                ExecTimeout,
+                cancellationToken,
+                "planning-exec",
+                health.ExecutablePath,
+                health);
             if (result.ExitCode != 0)
             {
-                throw new InvalidOperationException(FirstNonEmpty(
-                    result.StandardError.Trim(),
-                    result.StandardOutput.Trim(),
-                    "Codex exec failed."));
+                throw CreateCliFailureException(
+                    "planning-exec",
+                    "Codex CLI failed during planning.",
+                    health,
+                    result,
+                    runtimeOptions.CreateSummary(health.Detail));
             }
 
             var turn = ParseTurnOutput(result.StandardOutput);
@@ -281,23 +475,50 @@ namespace RevitAgenticAICompanion.Runtime
                 return turn;
             }
 
-            throw new InvalidOperationException(FirstNonEmpty(
-                turn.Error,
-                result.StandardError.Trim(),
-                "Codex completed without returning a structured payload."));
+            throw CreateCliFailureException(
+                "planning-parse",
+                FirstNonEmpty(
+                    turn.Error,
+                    result.StandardError.Trim(),
+                    "Codex completed without returning a structured payload."),
+                health,
+                result,
+                runtimeOptions.CreateSummary(health.Detail));
+        }
+
+        private static void AppendRuntimeOverrideArguments(StringBuilder args, RuntimeInvocationOptions runtimeOptions)
+        {
+            if (args == null || runtimeOptions == null || runtimeOptions.UsesCodexDefaultReasoning)
+            {
+                return;
+            }
+
+            args.Append("--config model_reasoning_effort=");
+            args.Append(runtimeOptions.RequestedReasoningEffort);
+            args.Append(' ');
         }
 
         private async Task<CodexCliResult> RunCliAsync(
             string arguments,
             string standardInput,
             TimeSpan timeout,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string failureStage,
+            string executablePath,
+            CodexRuntimeHealthReport health)
         {
+            var resolvedExecutablePath = executablePath;
+            if (string.IsNullOrWhiteSpace(resolvedExecutablePath))
+            {
+                var resolution = await _executableResolver.ResolveAsync(cancellationToken);
+                resolvedExecutablePath = resolution.ExecutablePath;
+            }
+
             var process = new Process
             {
                 StartInfo = new ProcessStartInfo
                 {
-                    FileName = ResolveCodexExecutable(),
+                    FileName = resolvedExecutablePath,
                     Arguments = arguments,
                     RedirectStandardInput = true,
                     RedirectStandardOutput = true,
@@ -313,7 +534,14 @@ namespace RevitAgenticAICompanion.Runtime
 
             if (!process.Start())
             {
-                throw new InvalidOperationException("Failed to start Codex CLI.");
+                throw CreateRuntimeException(
+                    failureStage,
+                    "Failed to start Codex CLI.",
+                    health,
+                    arguments,
+                    null,
+                    null,
+                    null);
             }
 
             var stdoutTask = process.StandardOutput.ReadToEndAsync();
@@ -332,10 +560,17 @@ namespace RevitAgenticAICompanion.Runtime
                 {
                     var earlyStdout = await stdoutTask;
                     var earlyStderr = await stderrTask;
-                    throw new InvalidOperationException(FirstNonEmpty(
-                        earlyStderr.Trim(),
-                        earlyStdout.Trim(),
-                        "Codex CLI closed stdin before the prompt could be written."));
+                    throw CreateRuntimeException(
+                        failureStage,
+                        FirstNonEmpty(
+                            earlyStderr.Trim(),
+                            earlyStdout.Trim(),
+                            "Codex CLI closed stdin before the prompt could be written."),
+                        health,
+                        arguments,
+                        null,
+                        earlyStdout,
+                        earlyStderr);
                 }
             }
 
@@ -346,11 +581,18 @@ namespace RevitAgenticAICompanion.Runtime
             if (completed != waitTask)
             {
                 TryKill(process);
-                throw new TimeoutException("Timed out waiting for Codex CLI process.");
+                throw CreateRuntimeException(
+                    failureStage,
+                    "Timed out waiting for Codex CLI process.",
+                    health,
+                    arguments,
+                    null,
+                    string.Empty,
+                    string.Empty);
             }
 
             await waitTask;
-            return new CodexCliResult(process.ExitCode, await stdoutTask, await stderrTask);
+            return new CodexCliResult(process.ExitCode, await stdoutTask, await stderrTask, resolvedExecutablePath, arguments);
         }
 
         private string EnsureOutputSchemaFile()
@@ -361,6 +603,284 @@ namespace RevitAgenticAICompanion.Runtime
                 File.WriteAllText(_schemaPath, BuildOutputSchema().ToJsonString(_jsonOptions), new UTF8Encoding(false));
                 return _schemaPath;
             }
+        }
+
+        private static string GetCodexConfigPath()
+        {
+            var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            return string.IsNullOrWhiteSpace(userProfile)
+                ? string.Empty
+                : Path.Combine(userProfile, ".codex", "config.toml");
+        }
+
+        private static void TryReadConfigSnapshot(string configPath, out string model, out string reasoningEffort)
+        {
+            model = string.Empty;
+            reasoningEffort = string.Empty;
+            if (string.IsNullOrWhiteSpace(configPath) || !File.Exists(configPath))
+            {
+                return;
+            }
+
+            var inSection = false;
+            foreach (var rawLine in File.ReadAllLines(configPath))
+            {
+                var line = (rawLine ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (line.StartsWith("[", StringComparison.Ordinal) && line.EndsWith("]", StringComparison.Ordinal))
+                {
+                    inSection = true;
+                    continue;
+                }
+
+                if (inSection)
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(model) && line.StartsWith("model =", StringComparison.Ordinal))
+                {
+                    model = UnquoteTomlValue(line.Substring("model =".Length).Trim());
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(reasoningEffort) && line.StartsWith("model_reasoning_effort =", StringComparison.Ordinal))
+                {
+                    reasoningEffort = UnquoteTomlValue(line.Substring("model_reasoning_effort =".Length).Trim());
+                }
+            }
+        }
+
+        private static void TryReadAvailableModels(out string[] availableModels, out string modelCatalogPath)
+        {
+            availableModels = Array.Empty<string>();
+            modelCatalogPath = string.Empty;
+            try
+            {
+                var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                if (string.IsNullOrWhiteSpace(userProfile))
+                {
+                    return;
+                }
+
+                modelCatalogPath = Path.Combine(userProfile, ".codex", "models_cache.json");
+                if (!File.Exists(modelCatalogPath))
+                {
+                    modelCatalogPath = string.Empty;
+                    return;
+                }
+
+                using (var document = JsonDocument.Parse(File.ReadAllText(modelCatalogPath)))
+                {
+                    if (!document.RootElement.TryGetProperty("models", out var modelsElement) ||
+                        modelsElement.ValueKind != JsonValueKind.Array)
+                    {
+                        return;
+                    }
+
+                    var models = new List<string>();
+                    foreach (var modelElement in modelsElement.EnumerateArray())
+                    {
+                        if (modelElement.TryGetProperty("slug", out var slugElement))
+                        {
+                            var slug = slugElement.GetString();
+                            if (!string.IsNullOrWhiteSpace(slug))
+                            {
+                                models.Add(slug.Trim());
+                            }
+                        }
+                    }
+
+                    availableModels = models
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                }
+            }
+            catch
+            {
+                availableModels = Array.Empty<string>();
+                modelCatalogPath = string.Empty;
+            }
+        }
+
+        private static string UnquoteTomlValue(string value)
+        {
+            var normalized = (value ?? string.Empty).Trim();
+            if (normalized.Length >= 2 &&
+                normalized.StartsWith("\"", StringComparison.Ordinal) &&
+                normalized.EndsWith("\"", StringComparison.Ordinal))
+            {
+                return normalized.Substring(1, normalized.Length - 2);
+            }
+
+            return normalized;
+        }
+
+        private static string BuildHealthDiagnosticSummary(
+            string executablePath,
+            string cliVersion,
+            string configModel,
+            string configReasoningEffort,
+            IReadOnlyList<string> availableModels,
+            bool supportsModelOverride,
+            bool supportsConfigOverride,
+            string executableSource)
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(cliVersion))
+            {
+                parts.Add("CLI: " + cliVersion);
+            }
+
+            if (!string.IsNullOrWhiteSpace(executablePath))
+            {
+                parts.Add("Executable: " + executablePath);
+            }
+
+            if (!string.IsNullOrWhiteSpace(executableSource))
+            {
+                parts.Add("Resolver: " + executableSource);
+            }
+
+            if (!string.IsNullOrWhiteSpace(configModel))
+            {
+                parts.Add("Config model: " + configModel);
+            }
+
+            if (!string.IsNullOrWhiteSpace(configReasoningEffort))
+            {
+                parts.Add("Config reasoning: " + configReasoningEffort);
+            }
+
+            if (availableModels != null && availableModels.Count > 0)
+            {
+                parts.Add("Known models: " + string.Join(", ", availableModels.Take(12)));
+            }
+
+            parts.Add("CLI overrides: model=" + supportsModelOverride + ", config=" + supportsConfigOverride);
+
+            return string.Join(" | ", parts.Where(part => !string.IsNullOrWhiteSpace(part)));
+        }
+
+        private CodexRuntimeException CreateCliFailureException(
+            string stage,
+            string message,
+            CodexRuntimeHealthReport health,
+            CodexCliResult result,
+            RuntimeInvocationSummary runtimeSummary = null)
+        {
+            return CreateRuntimeException(
+                stage,
+                message,
+                health,
+                result?.Arguments,
+                result?.ExitCode,
+                result?.StandardOutput,
+                result?.StandardError,
+                runtimeSummary);
+        }
+
+        private CodexRuntimeException CreateRuntimeException(
+            string stage,
+            string message,
+            CodexRuntimeHealthReport health,
+            string command = null,
+            int? exitCode = null,
+            string stdout = null,
+            string stderr = null,
+            RuntimeInvocationSummary runtimeSummary = null)
+        {
+            var effectiveHealth = health ?? BuildFallbackHealth();
+            var stdoutSummary = SummarizeText(stdout);
+            var stderrSummary = SummarizeText(stderr);
+            var detailParts = new List<string>();
+
+            var diagnosticSummary = effectiveHealth.BuildDiagnosticSummary();
+            if (!string.IsNullOrWhiteSpace(diagnosticSummary))
+            {
+                detailParts.Add(diagnosticSummary);
+            }
+
+            if (exitCode.HasValue)
+            {
+                detailParts.Add("Exit code: " + exitCode.Value);
+            }
+
+            if (!string.IsNullOrWhiteSpace(stderrSummary))
+            {
+                detailParts.Add("stderr: " + stderrSummary);
+            }
+            else if (!string.IsNullOrWhiteSpace(stdoutSummary))
+            {
+                detailParts.Add("stdout: " + stdoutSummary);
+            }
+
+            var detail = string.Join(" | ", detailParts.Where(part => !string.IsNullOrWhiteSpace(part)));
+            var combinedMessage = string.IsNullOrWhiteSpace(detail)
+                ? message
+                : message + " " + detail;
+            var failureRecord = new CodexRuntimeFailureRecord(
+                stage,
+                combinedMessage,
+                detail,
+                effectiveHealth.ExecutablePath,
+                effectiveHealth.CliVersion,
+                effectiveHealth.ConfigPath,
+                effectiveHealth.ConfigModel,
+                effectiveHealth.ConfigReasoningEffort,
+                command ?? string.Empty,
+                exitCode,
+                stdoutSummary,
+                stderrSummary,
+                runtimeSummary);
+            return new CodexRuntimeException(combinedMessage, failureRecord);
+        }
+
+        private CodexRuntimeHealthReport BuildFallbackHealth()
+        {
+            var configPath = GetCodexConfigPath();
+            var configModel = string.Empty;
+            var configReasoningEffort = string.Empty;
+            TryReadConfigSnapshot(configPath, out configModel, out configReasoningEffort);
+
+            return new CodexRuntimeHealthReport(
+                false,
+                false,
+                false,
+                string.Empty,
+                _cachedRuntimeHealth == null ? string.Empty : _cachedRuntimeHealth.ExecutablePath,
+                _cachedRuntimeHealth == null ? string.Empty : _cachedRuntimeHealth.CliVersion,
+                configPath,
+                configModel,
+                configReasoningEffort,
+                string.Empty,
+                Array.Empty<string>(),
+                executableSource: _cachedRuntimeHealth == null ? string.Empty : _cachedRuntimeHealth.ExecutableSource);
+        }
+
+        private static string SummarizeText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return string.Empty;
+            }
+
+            var singleLine = text
+                .Replace("\r", " ")
+                .Replace("\n", " ")
+                .Trim();
+            const int maxLength = 400;
+            if (singleLine.Length <= maxLength)
+            {
+                return singleLine;
+            }
+
+            return singleLine.Substring(0, maxLength) + "...";
         }
 
         private async Task EnsureConnectedAsync(CancellationToken cancellationToken)
@@ -378,7 +898,8 @@ namespace RevitAgenticAICompanion.Runtime
                     return;
                 }
 
-                var executable = ResolveCodexExecutable();
+                var resolution = await _executableResolver.ResolveAsync(cancellationToken);
+                var executable = resolution.ExecutablePath;
                 var process = new Process
                 {
                     StartInfo = new ProcessStartInfo
@@ -890,48 +1411,6 @@ namespace RevitAgenticAICompanion.Runtime
             catch
             {
             }
-        }
-
-        private static string ResolveCodexExecutable()
-        {
-            var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            if (!string.IsNullOrWhiteSpace(userProfile))
-            {
-                var sandboxBin = Path.Combine(userProfile, ".codex", ".sandbox-bin", "codex.exe");
-                if (File.Exists(sandboxBin))
-                {
-                    return sandboxBin;
-                }
-
-                var sandboxShim = Path.Combine(userProfile, ".codex", ".sandbox-bin", "codex");
-                if (File.Exists(sandboxShim))
-                {
-                    return sandboxShim;
-                }
-            }
-
-            var commandPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-            foreach (var directory in commandPath.Split(Path.PathSeparator))
-            {
-                if (string.IsNullOrWhiteSpace(directory))
-                {
-                    continue;
-                }
-
-                var candidate = Path.Combine(directory, "codex.exe");
-                if (File.Exists(candidate))
-                {
-                    return candidate;
-                }
-
-                candidate = Path.Combine(directory, "codex");
-                if (File.Exists(candidate))
-                {
-                    return candidate;
-                }
-            }
-
-            throw new FileNotFoundException("Could not find codex on PATH.");
         }
 
         private static string BuildProjectKey(RevitContextSnapshot snapshot)
@@ -1497,16 +1976,20 @@ namespace RevitAgenticAICompanion.Runtime
 
         private sealed class CodexCliResult
         {
-            public CodexCliResult(int exitCode, string standardOutput, string standardError)
+            public CodexCliResult(int exitCode, string standardOutput, string standardError, string executablePath, string arguments)
             {
                 ExitCode = exitCode;
                 StandardOutput = standardOutput ?? string.Empty;
                 StandardError = standardError ?? string.Empty;
+                ExecutablePath = executablePath ?? string.Empty;
+                Arguments = arguments ?? string.Empty;
             }
 
             public int ExitCode { get; }
             public string StandardOutput { get; }
             public string StandardError { get; }
+            public string ExecutablePath { get; }
+            public string Arguments { get; }
         }
 
         private sealed class CodexTurnResult
