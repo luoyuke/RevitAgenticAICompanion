@@ -1,17 +1,28 @@
 # Revit Agentic AI Companion
 
-Revit Agentic AI Companion is an experimental Revit 2026 add-in that puts a Codex-powered chat pane inside Revit. It can inspect the live model, ask for more evidence, generate C# against the Revit API, preview bounded edits, and execute approved changes through host-owned Revit transactions.
+Revit Agentic AI Companion is an experimental Revit 2026 add-in that puts an AI planning pane inside Revit. It can inspect the live model, ask for more evidence, generate C# against the Revit API, preview bounded edits, and execute approved changes through host-owned Revit transactions.
+
+Current spike version: `0.1.3-spike-llm-agnostic-runtime+20260729`.
 
 It is past pure proof-of-concept and can already do useful BIM work, but it is still a research/demo project. Expect failures, inspect the artifacts, and test on disposable copies before trusting it near serious production models.
 
 ## Prerequisites
 
 - Autodesk Revit 2026 on Windows.
-- The Codex desktop app, or a working Codex CLI installation.
-- A ChatGPT/OpenAI account signed in through the local Codex runtime.
+- For Codex: the Codex desktop app, or a working Codex CLI installation, plus a ChatGPT/OpenAI account signed in through the local Codex runtime.
+- For Claude: Claude Code CLI installed and authenticated for the current Windows user. Claude Desktop/Windows app can be detected for diagnostics, but it is not enough by itself because the add-in needs the scriptable `claude` command.
 - .NET SDK 8+ if you want to build from source.
 
-The add-in does not ship model access or credentials. It uses the local Codex runtime already installed for the current Windows user and checks sign-in with `codex login status`.
+The add-in does not ship model access or credentials. It uses the local runtime already installed and signed in for the current Windows user.
+
+## Runtime Providers
+
+This spike adds a provider selector:
+
+- `Codex`: uses the local Codex runtime.
+- `Claude`: uses Claude Code CLI through the `claude` command.
+
+The add-in does not drive Claude Desktop/Windows app directly. Claude Desktop is GUI-first and does not provide the non-interactive JSON/stdout contract this Revit host needs. If Claude Desktop is found but Claude Code CLI is missing, the pane reports that distinction instead of saying only "not found".
 
 ## Codex Runtime Resolution
 
@@ -28,14 +39,14 @@ The runtime status shown in the add-in and artifacts records the selected execut
 
 ## Runtime Profiles
 
-The dockable pane includes a compact runtime selector:
+The dockable pane includes compact provider and runtime selectors:
 
-- `Codex default`: inherit Codex config/defaults.
+- `Provider default`: inherit the selected provider's config/defaults where possible.
 - `Fast`: use the configured/default model with low reasoning.
 - `Balanced`: use the configured/default model with medium reasoning.
 - `Deep`: use the configured/default model with high reasoning.
 
-The add-in currently does not expose raw model IDs in the UI and does not mutate `%USERPROFILE%\.codex\config.toml`. To change the default model, update Codex's own config or app settings. Runtime profiles only override reasoning effort when the active Codex binary supports `--config`.
+The add-in currently does not expose raw model IDs in the UI and does not mutate provider-owned global config files. To change default models, use the provider's own config or app settings. Runtime profiles only apply overrides supported by the active provider binary.
 
 ## What It Can Do
 
@@ -166,6 +177,7 @@ The uninstaller removes the Revit manifest and installed payload. State files un
 
 - This is a demo/research add-in, not production BIM automation software.
 - The add-in currently inherits the configured Codex model unless a future model-selection UI is added.
+- Claude provider support is a spike. It requires Claude Code CLI; Claude Desktop detection is diagnostic-only.
 - Some timing comparisons are approximate because artifacts do not yet isolate pure `codex exec` duration.
 - Hopping between unsaved documents can still leak conversational context if Revit documents share the same title, because thread continuity falls back to document title when no file path exists.
 - User-facing artifact text can still show occasional encoding artifacts in some output paths.

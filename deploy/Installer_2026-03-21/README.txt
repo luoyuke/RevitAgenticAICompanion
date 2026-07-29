@@ -2,161 +2,196 @@ Revit Agentic AI Companion Installer
 ===================================
 
 This folder contains a packaged installer for the Revit 2026 demo add-in.
+This spike build adds a host-side runtime provider selector so the pane can run against Codex or Claude, depending on what is installed and signed in for the current Windows user.
+
+Spike version: 0.1.3-spike-llm-agnostic-runtime+20260729
 
 Prerequisites
 -------------
 
+Required:
+
 - Autodesk Revit 2026 on Windows.
-- Codex desktop app, or a working Codex CLI installation.
-- A ChatGPT/OpenAI account signed in through the local Codex runtime.
+- A local AI runtime signed in for the current Windows user.
+- For Codex: Codex desktop app or a working Codex CLI/runtime, plus a ChatGPT/OpenAI account.
+- For Claude: Claude Code CLI available locally, plus Claude authentication for the current Windows user. Claude Desktop/Windows app can be detected, but it is not enough by itself.
 
-The add-in does not include credentials or model access. It uses the local
-Codex runtime for the current Windows user.
-
-Codex Runtime Resolution
-------------------------
-
-The add-in validates candidate Codex executables with "codex --version" and
-then uses the first working runtime in this order:
-
-1. REVIT_AGENTIC_AI_CODEX_PATH, if explicitly set.
-2. Newest Codex app runtime under:
-
-   %LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe
-
-3. Working codex.exe or codex found on PATH.
-4. Legacy fallback:
-
-   %USERPROFILE%\.codex\.sandbox-bin\codex.exe
-
-Runtime status in the Revit pane and artifacts shows the selected executable,
-CLI version, resolver source, configured model, and configured reasoning effort.
+The installer does not include credentials, API keys, model access, or a bundled AI account. It only installs the Revit add-in files.
 
 Recommended Install
 -------------------
 
-Use the command wrapper:
+Close Revit first, then run:
 
-  install.cmd
+```cmd
+install.cmd
+```
 
-The wrapper launches PowerShell with ExecutionPolicy Bypass, so you can usually
-double-click it instead of typing the command manually.
+The command wrapper launches PowerShell with ExecutionPolicy Bypass. If Windows blocks double-click execution, open Command Prompt in this folder and run the same command.
 
 PowerShell Install
 ------------------
 
-If you prefer running the script directly:
+You can also run the script directly:
 
-  powershell -ExecutionPolicy Bypass -File .\install.ps1
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
 
-Useful install flags:
+Useful flags:
 
-  powershell -ExecutionPolicy Bypass -File .\install.ps1 -ForceSeed
-  powershell -ExecutionPolicy Bypass -File .\install.ps1 -ResetThreads
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -ForceSeed
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -ResetThreads
+```
 
 What the installer does:
 
-- Copies the packaged payload into:
-
-  %LOCALAPPDATA%\RevitAgenticAICompanion\install\UserMemoryMd_2026-03-21
-
-- Writes the Revit 2026 manifest into:
-
-  %APPDATA%\Autodesk\Revit\Addins\2026
-
-- Seeds memory.md only if missing, unless -ForceSeed is used.
-- Seeds project-threads.json only if missing, unless -ResetThreads is used.
+- Copies the packaged payload into `%LOCALAPPDATA%\RevitAgenticAICompanion\install\UserMemoryMd_2026-03-21`.
+- Writes the Revit 2026 manifest to `%APPDATA%\Autodesk\Revit\Addins\2026\RevitAgenticAICompanion.addin`.
+- Seeds `memory.md` only if missing, unless `-ForceSeed` is used.
+- Seeds `project-threads.json` only if missing, unless `-ResetThreads` is used.
 
 Restart Revit after installing or updating.
 
-Uninstall
----------
+Runtime Provider Notes
+----------------------
 
-Recommended:
+The Revit pane has a provider selector and runtime profile selector.
 
-  uninstall.cmd
+- Provider `Codex` uses the local Codex runtime.
+- Provider `Claude` uses the local Claude CLI/runtime.
+- Runtime profile `Provider default` avoids model/reasoning overrides where possible.
+- Runtime profiles `Fast`, `Balanced`, and `Deep` apply host-owned effort settings for the next planning run.
 
-Or directly:
+Natural-language prompts do not change the selected provider or runtime profile. Change those in the UI before pressing Plan.
 
-  powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
+Claude Desktop / Windows App
+----------------------------
 
-Close Revit before uninstalling. The uninstaller removes the Revit manifest and
-installed payload. State files under:
+The Claude provider is CLI-backed. The add-in needs the scriptable `claude` command because planning is non-interactive:
 
-  %LOCALAPPDATA%\RevitAgenticAICompanion\state
+```text
+prompt in -> JSON/stdout out -> Revit proposal
+```
 
-are left untouched.
+Claude Desktop/Windows app is detected only for diagnostics. If Desktop is installed but Claude Code CLI is missing, the pane should report that Desktop was found but the CLI is still required.
 
-Memory Commands
----------------
+Install and verify Claude Code CLI from a normal terminal:
 
-User memory is intentionally small and edited explicitly:
+```powershell
+irm https://claude.ai/install.ps1 | iex
+claude --version
+claude auth status
+```
 
-  /memory
-  /memory <key> <value>
-  /memory clear <key>
+Runtime Resolution
+------------------
 
-Allowed keys:
+Codex resolution order:
 
-- preferred_language
-- explanation_style
-- approval_style
-- inspection_bias
+1. `REVIT_AGENTIC_AI_CODEX_PATH`, if set.
+2. Newest Codex app runtime under `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe`.
+3. Working `codex.exe` or `codex` on `PATH`.
+4. Legacy fallback `%USERPROFILE%\.codex\.sandbox-bin\codex.exe`.
+
+Claude resolution order:
+
+1. `REVIT_AGENTIC_AI_CLAUDE_PATH`, if set.
+2. Working `claude.exe` or `claude` on `PATH`.
+3. Common npm/global install locations, if present.
+4. Claude Desktop/Windows app detection is diagnostic-only and is not used as the planning executable unless it also behaves like the `claude` CLI.
+
+If the pane reports provider status Warning or Error, check that the selected provider is installed and signed in from a normal terminal first.
 
 Manual Install
 --------------
 
-If you do not want to run scripts:
+Use this only if you do not want to run the scripts.
 
-1. Copy everything from the payload folder into:
+1. Close Revit.
+2. Create this folder:
 
-   %LOCALAPPDATA%\RevitAgenticAICompanion\install\UserMemoryMd_2026-03-21
+```text
+%LOCALAPPDATA%\RevitAgenticAICompanion\install\UserMemoryMd_2026-03-21
+```
 
-2. Create this manifest file:
+3. Copy everything from this package's `payload` folder into that install folder.
+4. Create this folder if it does not exist:
 
-   %APPDATA%\Autodesk\Revit\Addins\2026\RevitAgenticAICompanion.addin
+```text
+%APPDATA%\Autodesk\Revit\Addins\2026
+```
 
-3. Use this manifest content, replacing %LOCALAPPDATA% with the real path if
-   Revit does not expand environment variables:
+5. Create this file:
 
-   <?xml version="1.0" encoding="utf-8"?>
-   <RevitAddIns>
-     <AddIn Type="Application">
-       <Name>Revit Agentic AI Companion</Name>
-       <Assembly>%LOCALAPPDATA%\RevitAgenticAICompanion\install\UserMemoryMd_2026-03-21\RevitAgenticAICompanion.Addin.dll</Assembly>
-       <AddInId>8B40A927-3228-40D4-A51A-5CD14E6A1001</AddInId>
-       <FullClassName>RevitAgenticAICompanion.App</FullClassName>
-       <VendorId>CODEX</VendorId>
-       <VendorDescription>Revit Agentic AI Companion demo add-in.</VendorDescription>
-     </AddIn>
-     <AddIn Type="Command">
-       <Name>Show Revit Agentic AI Companion</Name>
-       <Assembly>%LOCALAPPDATA%\RevitAgenticAICompanion\install\UserMemoryMd_2026-03-21\RevitAgenticAICompanion.Addin.dll</Assembly>
-       <AddInId>8B40A927-3228-40D4-A51A-5CD14E6A1002</AddInId>
-       <FullClassName>RevitAgenticAICompanion.Commands.ShowChatCommand</FullClassName>
-       <Text>AI Companion</Text>
-       <Description>Open the Revit Agentic AI Companion chat pane.</Description>
-       <VendorId>CODEX</VendorId>
-       <VendorDescription>Revit Agentic AI Companion demo add-in.</VendorDescription>
-     </AddIn>
-   </RevitAddIns>
+```text
+%APPDATA%\Autodesk\Revit\Addins\2026\RevitAgenticAICompanion.addin
+```
 
-4. Optionally copy seed\memory.md and seed\project-threads.json into:
+6. Put this XML inside the `.addin` file. Replace `%LOCALAPPDATA%` with the full real path, for example `C:\Users\YourName\AppData\Local`, if Revit does not expand the environment variable on your machine.
 
-   %LOCALAPPDATA%\RevitAgenticAICompanion\state
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>Revit Agentic AI Companion</Name>
+    <Assembly>%LOCALAPPDATA%\RevitAgenticAICompanion\install\UserMemoryMd_2026-03-21\RevitAgenticAICompanion.Addin.dll</Assembly>
+    <AddInId>8B40A927-3228-40D4-A51A-5CD14E6A1001</AddInId>
+    <FullClassName>RevitAgenticAICompanion.App</FullClassName>
+    <VendorId>CODEX</VendorId>
+    <VendorDescription>Revit Agentic AI Companion demo add-in.</VendorDescription>
+  </AddIn>
+  <AddIn Type="Command">
+    <Name>Show Revit Agentic AI Companion</Name>
+    <Assembly>%LOCALAPPDATA%\RevitAgenticAICompanion\install\UserMemoryMd_2026-03-21\RevitAgenticAICompanion.Addin.dll</Assembly>
+    <AddInId>8B40A927-3228-40D4-A51A-5CD14E6A1002</AddInId>
+    <FullClassName>RevitAgenticAICompanion.Commands.ShowChatCommand</FullClassName>
+    <Text>AI Companion</Text>
+    <Description>Open the Revit Agentic AI Companion chat pane.</Description>
+    <VendorId>CODEX</VendorId>
+    <VendorDescription>Revit Agentic AI Companion demo add-in.</VendorDescription>
+  </AddIn>
+</RevitAddIns>
+```
+
+7. Optional seed files: copy `seed\memory.md` and `seed\project-threads.json` into:
+
+```text
+%LOCALAPPDATA%\RevitAgenticAICompanion\state
+```
 
 Manual Uninstall
 ----------------
 
 1. Close Revit.
-2. Delete:
+2. Delete `%APPDATA%\Autodesk\Revit\Addins\2026\RevitAgenticAICompanion.addin`.
+3. Delete `%LOCALAPPDATA%\RevitAgenticAICompanion\install\UserMemoryMd_2026-03-21`.
+4. Optionally keep or delete `%LOCALAPPDATA%\RevitAgenticAICompanion\state`.
 
-   %APPDATA%\Autodesk\Revit\Addins\2026\RevitAgenticAICompanion.addin
+Scripted Uninstall
+------------------
 
-3. Delete:
+Recommended:
 
-   %LOCALAPPDATA%\RevitAgenticAICompanion\install\UserMemoryMd_2026-03-21
+```cmd
+uninstall.cmd
+```
 
-4. Optionally keep or delete state files under:
+Or directly:
 
-   %LOCALAPPDATA%\RevitAgenticAICompanion\state
+```powershell
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
+```
+
+The uninstaller removes the Revit manifest and installed payload. State files under `%LOCALAPPDATA%\RevitAgenticAICompanion\state` are left untouched.
+
+Troubleshooting
+---------------
+
+- If PowerShell blocks the script, use `powershell -ExecutionPolicy Bypass -File .\install.ps1` from Command Prompt.
+- If Revit still loads an older build, check the `.addin` file path under `%APPDATA%\Autodesk\Revit\Addins\2026`.
+- If Codex is not found, set `REVIT_AGENTIC_AI_CODEX_PATH` to the full path of `codex.exe`.
+- If Claude is not found, set `REVIT_AGENTIC_AI_CLAUDE_PATH` to the full path of `claude.exe`.
+- If Claude Desktop is found but Claude CLI is missing, install Claude Code CLI; the desktop app alone cannot return the structured JSON the add-in expects.
+- If the provider is found but planning fails, run the provider once in a normal terminal to confirm it is signed in.

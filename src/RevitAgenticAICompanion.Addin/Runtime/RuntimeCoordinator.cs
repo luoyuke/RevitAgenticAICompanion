@@ -24,6 +24,7 @@ namespace RevitAgenticAICompanion.Runtime
         private readonly ArtifactStore _artifactStore;
         private readonly AuditStore _auditStore;
         private readonly UserMemoryStore _userMemoryStore;
+        private readonly RuntimeProviderSettings _runtimeProviderSettings;
         private static readonly TimeSpan PlanningBudget = TimeSpan.FromMinutes(8);
         private const int MaxInspectionProbes = 3;
         private const string MemoryCommandPrefix = "/memory";
@@ -37,7 +38,8 @@ namespace RevitAgenticAICompanion.Runtime
             GeneratedActionExecutor executor,
             ArtifactStore artifactStore,
             AuditStore auditStore,
-            UserMemoryStore userMemoryStore)
+            UserMemoryStore userMemoryStore,
+            RuntimeProviderSettings runtimeProviderSettings = null)
         {
             _dispatcher = dispatcher;
             _documentStateTracker = documentStateTracker;
@@ -48,9 +50,29 @@ namespace RevitAgenticAICompanion.Runtime
             _artifactStore = artifactStore;
             _auditStore = auditStore;
             _userMemoryStore = userMemoryStore;
+            _runtimeProviderSettings = runtimeProviderSettings;
         }
 
         public PlanningSession CurrentSession { get; private set; }
+
+        public AgentRuntimeProvider RuntimeProvider
+        {
+            get
+            {
+                return _agentRuntimeClient is RuntimeClientRouter router
+                    ? router.SelectedProvider
+                    : AgentRuntimeProvider.Codex;
+            }
+        }
+
+        public void SetRuntimeProvider(AgentRuntimeProvider provider)
+        {
+            if (_agentRuntimeClient is RuntimeClientRouter router)
+            {
+                router.SelectedProvider = provider;
+                _runtimeProviderSettings?.SetProvider(provider);
+            }
+        }
 
         public Task<AgentRuntimeStatus> GetRuntimeStatusAsync(CancellationToken cancellationToken)
         {
@@ -201,7 +223,7 @@ namespace RevitAgenticAICompanion.Runtime
                     return CurrentSession;
                 }
             }
-            catch (CodexRuntimeException ex)
+            catch (AgentRuntimeException ex)
             {
                 PersistRuntimeFailure(prompt, snapshot, ex);
                 throw;
@@ -560,7 +582,7 @@ namespace RevitAgenticAICompanion.Runtime
                     failedSession.RuntimeOptions,
                     CancellationToken.None);
             }
-            catch (CodexRuntimeException ex)
+            catch (AgentRuntimeException ex)
             {
                 PersistRuntimeFailure(failedSession.Proposal?.UserPrompt, failedSession.ContextSnapshot, ex);
                 throw;
@@ -619,7 +641,7 @@ namespace RevitAgenticAICompanion.Runtime
             return analysisSession;
         }
 
-        private void PersistRuntimeFailure(string prompt, RevitContextSnapshot snapshot, CodexRuntimeException exception)
+        private void PersistRuntimeFailure(string prompt, RevitContextSnapshot snapshot, AgentRuntimeException exception)
         {
             var failureRecord = exception?.FailureRecord;
             if (failureRecord == null)

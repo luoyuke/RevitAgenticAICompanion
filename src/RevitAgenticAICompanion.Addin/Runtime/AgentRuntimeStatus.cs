@@ -9,7 +9,7 @@ namespace RevitAgenticAICompanion.Runtime
             bool isAuthenticated,
             bool supportsLogin,
             string detail,
-            CodexRuntimeHealthReport runtimeHealth = null)
+            AgentRuntimeHealthReport runtimeHealth = null)
         {
             Mode = mode ?? string.Empty;
             IsAvailable = isAvailable;
@@ -26,6 +26,6 @@ namespace RevitAgenticAICompanion.Runtime
         public bool IsAuthenticated { get; }
         public bool SupportsLogin { get; }
         public string Detail { get; }
-        public CodexRuntimeHealthReport RuntimeHealth { get; }
+        public AgentRuntimeHealthReport RuntimeHealth { get; }
     }
 }

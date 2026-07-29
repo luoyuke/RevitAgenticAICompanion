@@ -17,7 +17,7 @@ namespace RevitAgenticAICompanion.Runtime
             {
                 switch (Profile)
                 {
-                    case RuntimeProfile.CodexDefault:
+                    case RuntimeProfile.ProviderDefault:
                         return "Codex default";
                     case RuntimeProfile.Fast:
                         return "Fast";
@@ -42,27 +42,27 @@ namespace RevitAgenticAICompanion.Runtime
                         return "medium";
                     case RuntimeProfile.Deep:
                         return "high";
-                    case RuntimeProfile.CodexDefault:
+                    case RuntimeProfile.ProviderDefault:
                     default:
                         return string.Empty;
                 }
             }
         }
 
-        public bool UsesCodexDefaultModel
+        public bool UsesProviderDefaultModel
         {
             get { return true; }
         }
 
-        public bool UsesCodexDefaultReasoning
+        public bool UsesProviderDefaultReasoning
         {
-            get { return Profile == RuntimeProfile.CodexDefault; }
+            get { return Profile == RuntimeProfile.ProviderDefault; }
         }
 
         public RuntimeInvocationSummary CreateSummary(string runtimeStatusSummary, string fallbackReason = null)
         {
             var effectiveFallbackReason = fallbackReason ??
-                (Profile == RuntimeProfile.CodexDefault
+                (Profile == RuntimeProfile.ProviderDefault
                     ? string.Empty
                     : "Model override omitted; using Codex default/configured model.");
 
@@ -70,9 +70,9 @@ namespace RevitAgenticAICompanion.Runtime
                 DisplayName,
                 string.Empty,
                 RequestedReasoningEffort,
-                UsesCodexDefaultModel,
-                UsesCodexDefaultReasoning,
-                UsesCodexDefaultReasoning ? "Codex default config" : "Reasoning override only",
+                UsesProviderDefaultModel,
+                UsesProviderDefaultReasoning,
+                UsesProviderDefaultReasoning ? "Codex default config" : "Reasoning override only",
                 runtimeStatusSummary,
                 effectiveFallbackReason);
         }

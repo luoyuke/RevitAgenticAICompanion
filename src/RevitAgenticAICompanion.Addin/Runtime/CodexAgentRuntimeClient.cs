@@ -40,7 +40,7 @@ namespace RevitAgenticAICompanion.Runtime
         private bool _isInitialized;
         private string _lastTransportError;
         private Action<string, JsonNode> _notificationHandler;
-        private CodexRuntimeHealthReport _cachedRuntimeHealth;
+        private AgentRuntimeHealthReport _cachedRuntimeHealth;
         private DateTimeOffset _cachedRuntimeHealthUtc;
 
         public CodexAgentRuntimeClient(LocalStoragePaths paths, ProjectThreadStore threadStore)
@@ -74,7 +74,7 @@ namespace RevitAgenticAICompanion.Runtime
                     health.Detail,
                     health);
             }
-            catch (CodexRuntimeException ex)
+            catch (AgentRuntimeException ex)
             {
                 return new AgentRuntimeStatus("Codex", false, false, false, true, ex.Message);
             }
@@ -224,7 +224,7 @@ namespace RevitAgenticAICompanion.Runtime
         {
         }
 
-        private async Task<CodexRuntimeHealthReport> GetRuntimeHealthAsync(bool forceRefresh, CancellationToken cancellationToken)
+        private async Task<AgentRuntimeHealthReport> GetRuntimeHealthAsync(bool forceRefresh, CancellationToken cancellationToken)
         {
             if (!forceRefresh &&
                 _cachedRuntimeHealth != null &&
@@ -253,7 +253,7 @@ namespace RevitAgenticAICompanion.Runtime
                 var cliVersion = FirstNonEmpty(executableResolution.Version, "unknown");
 
                 var execHelpResult = await RunCliAsync(
-                    "exec --help",
+                    new[] { "exec", "--help" },
                     null,
                     StatusTimeout,
                     cancellationToken,
@@ -274,7 +274,7 @@ namespace RevitAgenticAICompanion.Runtime
                 }
 
                 var loginResult = await RunCliAsync(
-                    "login status",
+                    new[] { "login", "status" },
                     null,
                     StatusTimeout,
                     cancellationToken,
@@ -331,7 +331,7 @@ namespace RevitAgenticAICompanion.Runtime
                     detailBuilder.Append(" Model validation is unavailable because no local Codex model catalog was found.");
                 }
 
-                var report = new CodexRuntimeHealthReport(
+                var report = new AgentRuntimeHealthReport(
                     true,
                     isAuthenticated,
                     !string.IsNullOrWhiteSpace(blockingIssue),
@@ -351,7 +351,7 @@ namespace RevitAgenticAICompanion.Runtime
                 _cachedRuntimeHealthUtc = DateTimeOffset.UtcNow;
                 return report;
             }
-            catch (CodexRuntimeException)
+            catch (AgentRuntimeException)
             {
                 throw;
             }
@@ -378,25 +378,25 @@ namespace RevitAgenticAICompanion.Runtime
             // Thread continuity is scoped per project key so follow-up prompts stay local to the
             // active Revit document instead of sharing one global Codex conversation.
             var projectKey = ProjectKeyBuilder.FromSnapshot(snapshot);
-            var storedThreadId = _threadStore.GetThreadId(projectKey);
+            var storedThreadId = _threadStore.GetThreadId(AgentRuntimeProvider.Codex, projectKey);
 
             try
             {
                 var result = await RunTurnAsync(storedThreadId, prompt, useOutputSchema, runtimeOptions, cancellationToken);
                 if (!string.IsNullOrWhiteSpace(result.ThreadId))
                 {
-                    _threadStore.SetThreadId(projectKey, result.ThreadId);
+                    _threadStore.SetThreadId(AgentRuntimeProvider.Codex, projectKey, result.ThreadId);
                 }
 
                 return result.StructuredPayload;
             }
             catch (InvalidOperationException ex) when (!string.IsNullOrWhiteSpace(storedThreadId) && LooksLikeMissingThread(ex.Message))
             {
-                _threadStore.ClearThreadId(projectKey);
+                _threadStore.ClearThreadId(AgentRuntimeProvider.Codex, projectKey);
                 var retry = await RunTurnAsync(null, prompt, true, runtimeOptions, cancellationToken);
                 if (!string.IsNullOrWhiteSpace(retry.ThreadId))
                 {
-                    _threadStore.SetThreadId(projectKey, retry.ThreadId);
+                    _threadStore.SetThreadId(AgentRuntimeProvider.Codex, projectKey, retry.ThreadId);
                 }
 
                 return retry.StructuredPayload;
@@ -412,7 +412,7 @@ namespace RevitAgenticAICompanion.Runtime
         {
             runtimeOptions = runtimeOptions ?? RuntimeInvocationOptions.Default;
             var health = await GetRuntimeHealthAsync(false, cancellationToken);
-            if (!runtimeOptions.UsesCodexDefaultReasoning && !health.SupportsConfigOverride)
+            if (!runtimeOptions.UsesProviderDefaultReasoning && !health.SupportsConfigOverride)
             {
                 throw CreateRuntimeException(
                     "profile-override",
@@ -423,36 +423,36 @@ namespace RevitAgenticAICompanion.Runtime
                         "Reasoning override unavailable because this Codex CLI does not advertise --config support."));
             }
 
-            var args = new StringBuilder();
+            var args = new List<string> { "exec" };
             var isResume = !string.IsNullOrWhiteSpace(threadId);
-            args.Append("exec ");
             if (isResume)
             {
                 // Resume reuses Codex's own short-term thread memory; fresh turns get the host's
                 // explicit planning prompt plus the JSON schema contract.
-                args.Append("resume ");
-                args.Append(threadId);
-                args.Append(' ');
+                args.Add("resume");
+                args.Add(threadId);
                 AppendRuntimeOverrideArguments(args, runtimeOptions);
-                args.Append("--skip-git-repo-check --json ");
+                args.Add("--skip-git-repo-check");
+                args.Add("--json");
             }
             else
             {
                 AppendRuntimeOverrideArguments(args, runtimeOptions);
-                args.Append("--skip-git-repo-check --sandbox read-only --json ");
+                args.Add("--skip-git-repo-check");
+                args.Add("--sandbox");
+                args.Add("read-only");
+                args.Add("--json");
                 if (useOutputSchema)
                 {
-                    args.Append("--output-schema ");
-                    args.Append('"');
-                    args.Append(EnsureOutputSchemaFile());
-                    args.Append("\" ");
+                    args.Add("--output-schema");
+                    args.Add(EnsureOutputSchemaFile());
                 }
             }
 
-            args.Append("- ");
+            args.Add("-");
 
             var result = await RunCliAsync(
-                args.ToString(),
+                args,
                 prompt ?? string.Empty,
                 ExecTimeout,
                 cancellationToken,
@@ -486,26 +486,25 @@ namespace RevitAgenticAICompanion.Runtime
                 runtimeOptions.CreateSummary(health.Detail));
         }
 
-        private static void AppendRuntimeOverrideArguments(StringBuilder args, RuntimeInvocationOptions runtimeOptions)
+        private static void AppendRuntimeOverrideArguments(ICollection<string> args, RuntimeInvocationOptions runtimeOptions)
         {
-            if (args == null || runtimeOptions == null || runtimeOptions.UsesCodexDefaultReasoning)
+            if (args == null || runtimeOptions == null || runtimeOptions.UsesProviderDefaultReasoning)
             {
                 return;
             }
 
-            args.Append("--config model_reasoning_effort=");
-            args.Append(runtimeOptions.RequestedReasoningEffort);
-            args.Append(' ');
+            args.Add("--config");
+            args.Add("model_reasoning_effort=" + runtimeOptions.RequestedReasoningEffort);
         }
 
         private async Task<CodexCliResult> RunCliAsync(
-            string arguments,
+            IReadOnlyList<string> arguments,
             string standardInput,
             TimeSpan timeout,
             CancellationToken cancellationToken,
             string failureStage,
             string executablePath,
-            CodexRuntimeHealthReport health)
+            AgentRuntimeHealthReport health)
         {
             var resolvedExecutablePath = executablePath;
             if (string.IsNullOrWhiteSpace(resolvedExecutablePath))
@@ -514,23 +513,34 @@ namespace RevitAgenticAICompanion.Runtime
                 resolvedExecutablePath = resolution.ExecutablePath;
             }
 
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = resolvedExecutablePath,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardInputEncoding = Encoding.UTF8,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = _paths.RootPath,
+            };
+
+            if (arguments != null)
+            {
+                foreach (var argument in arguments)
+                {
+                    startInfo.ArgumentList.Add(argument ?? string.Empty);
+                }
+            }
+
+            var argumentSummary = CliProcessRunner.BuildArgumentSummary(arguments);
             var process = new Process
             {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = resolvedExecutablePath,
-                    Arguments = arguments,
-                    RedirectStandardInput = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    StandardInputEncoding = Encoding.UTF8,
-                    StandardOutputEncoding = Encoding.UTF8,
-                    StandardErrorEncoding = Encoding.UTF8,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    WorkingDirectory = _paths.RootPath,
-                },
+                StartInfo = startInfo,
             };
+
 
             if (!process.Start())
             {
@@ -538,7 +548,7 @@ namespace RevitAgenticAICompanion.Runtime
                     failureStage,
                     "Failed to start Codex CLI.",
                     health,
-                    arguments,
+                    argumentSummary,
                     null,
                     null,
                     null);
@@ -567,7 +577,7 @@ namespace RevitAgenticAICompanion.Runtime
                             earlyStdout.Trim(),
                             "Codex CLI closed stdin before the prompt could be written."),
                         health,
-                        arguments,
+                        argumentSummary,
                         null,
                         earlyStdout,
                         earlyStderr);
@@ -585,14 +595,14 @@ namespace RevitAgenticAICompanion.Runtime
                     failureStage,
                     "Timed out waiting for Codex CLI process.",
                     health,
-                    arguments,
+                    argumentSummary,
                     null,
                     string.Empty,
                     string.Empty);
             }
 
             await waitTask;
-            return new CodexCliResult(process.ExitCode, await stdoutTask, await stderrTask, resolvedExecutablePath, arguments);
+            return new CodexCliResult(process.ExitCode, await stdoutTask, await stderrTask, resolvedExecutablePath, argumentSummary);
         }
 
         private string EnsureOutputSchemaFile()
@@ -767,10 +777,10 @@ namespace RevitAgenticAICompanion.Runtime
             return string.Join(" | ", parts.Where(part => !string.IsNullOrWhiteSpace(part)));
         }
 
-        private CodexRuntimeException CreateCliFailureException(
+        private AgentRuntimeException CreateCliFailureException(
             string stage,
             string message,
-            CodexRuntimeHealthReport health,
+            AgentRuntimeHealthReport health,
             CodexCliResult result,
             RuntimeInvocationSummary runtimeSummary = null)
         {
@@ -785,10 +795,10 @@ namespace RevitAgenticAICompanion.Runtime
                 runtimeSummary);
         }
 
-        private CodexRuntimeException CreateRuntimeException(
+        private AgentRuntimeException CreateRuntimeException(
             string stage,
             string message,
-            CodexRuntimeHealthReport health,
+            AgentRuntimeHealthReport health,
             string command = null,
             int? exitCode = null,
             string stdout = null,
@@ -824,7 +834,7 @@ namespace RevitAgenticAICompanion.Runtime
             var combinedMessage = string.IsNullOrWhiteSpace(detail)
                 ? message
                 : message + " " + detail;
-            var failureRecord = new CodexRuntimeFailureRecord(
+            var failureRecord = new AgentRuntimeFailureRecord(
                 stage,
                 combinedMessage,
                 detail,
@@ -838,17 +848,17 @@ namespace RevitAgenticAICompanion.Runtime
                 stdoutSummary,
                 stderrSummary,
                 runtimeSummary);
-            return new CodexRuntimeException(combinedMessage, failureRecord);
+            return new AgentRuntimeException(combinedMessage, failureRecord);
         }
 
-        private CodexRuntimeHealthReport BuildFallbackHealth()
+        private AgentRuntimeHealthReport BuildFallbackHealth()
         {
             var configPath = GetCodexConfigPath();
             var configModel = string.Empty;
             var configReasoningEffort = string.Empty;
             TryReadConfigSnapshot(configPath, out configModel, out configReasoningEffort);
 
-            return new CodexRuntimeHealthReport(
+            return new AgentRuntimeHealthReport(
                 false,
                 false,
                 false,
@@ -958,7 +968,7 @@ namespace RevitAgenticAICompanion.Runtime
 
         private async Task<string> GetOrCreateThreadIdAsync(string projectKey, CancellationToken cancellationToken)
         {
-            var threadId = _threadStore.GetThreadId(projectKey);
+            var threadId = _threadStore.GetThreadId(AgentRuntimeProvider.Codex, projectKey);
             if (!string.IsNullOrWhiteSpace(threadId))
             {
                 return threadId;
@@ -970,7 +980,7 @@ namespace RevitAgenticAICompanion.Runtime
                 throw new InvalidOperationException("Codex did not return a thread id.");
             }
 
-            _threadStore.SetThreadId(projectKey, threadId);
+            _threadStore.SetThreadId(AgentRuntimeProvider.Codex, projectKey, threadId);
             return threadId;
         }
 

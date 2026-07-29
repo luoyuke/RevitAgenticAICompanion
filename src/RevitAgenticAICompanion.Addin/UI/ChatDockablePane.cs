@@ -19,6 +19,7 @@ namespace RevitAgenticAICompanion.UI
         private readonly WpfTextBox _summaryTextBox;
         private readonly WpfTextBox _sourceTextBox;
         private readonly TextBlock _statusText;
+        private readonly ComboBox _runtimeProviderComboBox;
         private readonly ComboBox _runtimeProfileComboBox;
         private readonly Button _planButton;
         private readonly Button _approveButton;
@@ -53,6 +54,26 @@ namespace RevitAgenticAICompanion.UI
 
             runtimeToolbar.Children.Add(new TextBlock
             {
+                Text = "Provider:",
+                Margin = new Thickness(0, 0, 6, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                FontFamily = CreateUiFontFamily(),
+            });
+
+            _runtimeProviderComboBox = new ComboBox
+            {
+                Width = 100,
+                Margin = new Thickness(0, 0, 18, 0),
+                FontFamily = CreateUiFontFamily(),
+            };
+            AddRuntimeProviderItem("Codex", AgentRuntimeProvider.Codex);
+            AddRuntimeProviderItem("Claude", AgentRuntimeProvider.Claude);
+            _runtimeProviderComboBox.SelectedIndex = _runtimeCoordinator.RuntimeProvider == AgentRuntimeProvider.Claude ? 1 : 0;
+            _runtimeProviderComboBox.SelectionChanged += OnRuntimeProviderChanged;
+            runtimeToolbar.Children.Add(_runtimeProviderComboBox);
+
+            runtimeToolbar.Children.Add(new TextBlock
+            {
                 Text = "Runtime:",
                 Margin = new Thickness(0, 0, 6, 0),
                 VerticalAlignment = VerticalAlignment.Center,
@@ -61,11 +82,11 @@ namespace RevitAgenticAICompanion.UI
 
             _runtimeProfileComboBox = new ComboBox
             {
-                Width = 140,
+                Width = 130,
                 Margin = new Thickness(0, 0, 18, 0),
                 FontFamily = CreateUiFontFamily(),
             };
-            AddRuntimeProfileItem("Codex default", RuntimeProfile.CodexDefault, null);
+            AddRuntimeProfileItem("Provider default", RuntimeProfile.ProviderDefault, null);
             AddRuntimeProfileItem("Fast", RuntimeProfile.Fast, null);
             AddRuntimeProfileItem("Balanced", RuntimeProfile.Balanced, null);
             AddRuntimeProfileItem("Deep", RuntimeProfile.Deep, "May be slower and use more quota.");
@@ -74,7 +95,7 @@ namespace RevitAgenticAICompanion.UI
 
             runtimeToolbar.Children.Add(new TextBlock
             {
-                Text = "Codex status:",
+                Text = "Runtime status:",
                 Margin = new Thickness(0, 0, 6, 0),
                 VerticalAlignment = VerticalAlignment.Center,
                 FontFamily = CreateUiFontFamily(),
@@ -178,6 +199,7 @@ namespace RevitAgenticAICompanion.UI
                 SetBusyState(true);
                 AppendLog("Planning from current Revit context...");
                 var runtimeOptions = GetSelectedRuntimeOptions();
+                AppendLog("Runtime provider: " + _runtimeCoordinator.RuntimeProvider);
                 AppendLog("Runtime profile: " + runtimeOptions.DisplayName);
                 var session = await _runtimeCoordinator.CreateProposalAsync(_promptTextBox.Text, runtimeOptions, CancellationToken.None);
                 ApplySessionToUi(session);
@@ -217,7 +239,7 @@ namespace RevitAgenticAICompanion.UI
 
                 AppendLog("Artifacts written to: " + session.Proposal.ArtifactDirectory);
             }
-            catch (CodexRuntimeException ex)
+            catch (AgentRuntimeException ex)
             {
                 AppendLog("Planning failed: " + ex.Message);
                 AppendRuntimeFailure(ex.FailureRecord);
@@ -294,7 +316,7 @@ namespace RevitAgenticAICompanion.UI
         {
             _ = Dispatcher.InvokeAsync(() =>
             {
-                AppendLog("Refreshing runtime auth status...");
+                AppendLog("Refreshing runtime status...");
                 _ = RefreshRuntimeStatusAsync(logToPane: true);
             });
         }
@@ -350,11 +372,11 @@ namespace RevitAgenticAICompanion.UI
                 SetBusyState(true);
                 var status = await _runtimeCoordinator.GetRuntimeStatusAsync(CancellationToken.None);
                 _currentRuntimeStatus = status;
-                _statusText.Text = BuildCodexStatusLabel(status);
+                _statusText.Text = BuildRuntimeStatusLabel(status);
                 _statusText.ToolTip = status.Mode + ": " + status.Detail;
                 if (logToPane)
                 {
-                    AppendLog("Runtime status: " + status.Mode + ". " + status.Detail);
+                    AppendLog("Runtime status (" + _runtimeCoordinator.RuntimeProvider + "): " + status.Mode + ". " + status.Detail);
                 }
             }
             catch (Exception ex)
@@ -371,6 +393,30 @@ namespace RevitAgenticAICompanion.UI
             {
                 SetBusyState(false);
             }
+        }
+
+        private void AddRuntimeProviderItem(string label, AgentRuntimeProvider provider)
+        {
+            var item = new ComboBoxItem
+            {
+                Content = label,
+                Tag = provider,
+                FontFamily = CreateUiFontFamily(),
+            };
+            _runtimeProviderComboBox.Items.Add(item);
+        }
+
+        private async void OnRuntimeProviderChanged(object sender, SelectionChangedEventArgs e)
+        {
+            var selectedItem = _runtimeProviderComboBox.SelectedItem as ComboBoxItem;
+            if (!(selectedItem?.Tag is AgentRuntimeProvider provider))
+            {
+                return;
+            }
+
+            _runtimeCoordinator.SetRuntimeProvider(provider);
+            AppendLog("Runtime provider selected: " + provider);
+            await RefreshRuntimeStatusAsync(logToPane: true);
         }
 
         private void AddRuntimeProfileItem(string label, RuntimeProfile profile, string tooltip)
@@ -396,7 +442,7 @@ namespace RevitAgenticAICompanion.UI
             return RuntimeInvocationOptions.Default;
         }
 
-        private static string BuildCodexStatusLabel(AgentRuntimeStatus status)
+        private static string BuildRuntimeStatusLabel(AgentRuntimeStatus status)
         {
             if (status == null || !status.IsAvailable || !status.IsAuthenticated)
             {
@@ -648,7 +694,7 @@ namespace RevitAgenticAICompanion.UI
                 && session.ValidationReport.IsUndoHostile;
         }
 
-        private void AppendRuntimeFailure(CodexRuntimeFailureRecord failureRecord)
+        private void AppendRuntimeFailure(AgentRuntimeFailureRecord failureRecord)
         {
             if (failureRecord == null)
             {
@@ -657,7 +703,7 @@ namespace RevitAgenticAICompanion.UI
 
             if (!string.IsNullOrWhiteSpace(failureRecord.CliVersion))
             {
-                AppendLog("Codex CLI version: " + failureRecord.CliVersion);
+                AppendLog("Runtime CLI version: " + failureRecord.CliVersion);
             }
 
             if (!string.IsNullOrWhiteSpace(failureRecord.ExecutablePath))

@@ -161,7 +161,7 @@ WHERE run_id = $run_id;";
             }
         }
 
-        public void WriteRuntimeFailure(string prompt, RevitContextSnapshot snapshot, CodexRuntimeFailureRecord failureRecord)
+        public void WriteRuntimeFailure(string prompt, RevitContextSnapshot snapshot, AgentRuntimeFailureRecord failureRecord)
         {
             if (failureRecord == null)
             {

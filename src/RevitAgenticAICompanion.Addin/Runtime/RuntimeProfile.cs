@@ -2,7 +2,7 @@ namespace RevitAgenticAICompanion.Runtime
 {
     public enum RuntimeProfile
     {
-        CodexDefault,
+        ProviderDefault,
         Fast,
         Balanced,
         Deep,

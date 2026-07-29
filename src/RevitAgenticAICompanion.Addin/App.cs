@@ -32,13 +32,13 @@ namespace RevitAgenticAICompanion
             var auditStore = new AuditStore(storagePaths);
             var userMemoryStore = new UserMemoryStore(storagePaths);
             var threadStore = new ProjectThreadStore(storagePaths);
-            var codexClient = new CodexAgentRuntimeClient(storagePaths, threadStore);
-            _runtimeDisposable = codexClient;
-            var runtimeClient = new FallbackAgentRuntimeClient(codexClient, new LocalReviewAgentRuntimeClient());
+            var runtimeProviderSettings = new RuntimeProviderSettings(storagePaths);
+            var runtimeClient = RuntimeClientFactory.Create(storagePaths, threadStore, runtimeProviderSettings.GetProvider());
+            _runtimeDisposable = runtimeClient;
             var validator = new GeneratedCodeValidator();
             var compiler = new GeneratedActionCompiler();
             var executor = new GeneratedActionExecutor();
-            var coordinator = new RuntimeCoordinator(dispatcher, _documentStateTracker, runtimeClient, validator, compiler, executor, artifactStore, auditStore, userMemoryStore);
+            var coordinator = new RuntimeCoordinator(dispatcher, _documentStateTracker, runtimeClient, validator, compiler, executor, artifactStore, auditStore, userMemoryStore, runtimeProviderSettings);
             var chatPane = new ChatDockablePane(coordinator);
 
             HostEnvironment.Initialize(dispatcher, externalEvent, _documentStateTracker, coordinator, chatPane);
@@ -62,7 +62,7 @@ namespace RevitAgenticAICompanion
 
         private static void CreateRibbon(UIControlledApplication application)
         {
-            const string tabName = "Codex";
+            const string tabName = "Revit AI";
             const string panelName = "Revit AI";
 
             try

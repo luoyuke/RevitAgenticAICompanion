@@ -101,7 +101,7 @@ namespace RevitAgenticAICompanion.Storage
                 Utf8NoBom);
         }
 
-        public string WriteRuntimeFailure(string prompt, RevitContextSnapshot snapshot, CodexRuntimeFailureRecord failureRecord)
+        public string WriteRuntimeFailure(string prompt, RevitContextSnapshot snapshot, AgentRuntimeFailureRecord failureRecord)
         {
             if (failureRecord == null)
             {
