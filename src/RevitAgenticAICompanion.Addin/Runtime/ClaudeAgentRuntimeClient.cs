@@ -71,6 +71,7 @@ namespace RevitAgenticAICompanion.Runtime
             runtimeOptions = runtimeOptions ?? RuntimeInvocationOptions.Default;
             var json = await RunPlanningTurnAsync(request.ContextSnapshot, BuildPlanningPrompt(request), runtimeOptions, cancellationToken);
             var payload = JsonSerializer.Deserialize<ClaudePlanningPayload>(json, _jsonOptions) ?? throw new InvalidOperationException("Claude returned an empty planning payload.");
+            payload = await EnsureGeneratedSourceAsync(request, payload, runtimeOptions, cancellationToken);
             return BuildProposalCandidate(request.Prompt, payload, 0);
         }
 
@@ -80,6 +81,7 @@ namespace RevitAgenticAICompanion.Runtime
             runtimeOptions = runtimeOptions ?? RuntimeInvocationOptions.Default;
             var json = await RunPlanningTurnAsync(request.ContextSnapshot, BuildRepairPrompt(request, failedProposal, compilation), runtimeOptions, cancellationToken);
             var payload = JsonSerializer.Deserialize<ClaudePlanningPayload>(json, _jsonOptions);
+            payload = await EnsureGeneratedSourceAsync(request, payload, runtimeOptions, cancellationToken);
             return payload == null || !RequiresGeneratedCode(payload) || string.IsNullOrWhiteSpace(payload.GeneratedSource) ? failedProposal : BuildProposalCandidate(request.Prompt, payload, 1);
         }
 
@@ -88,7 +90,25 @@ namespace RevitAgenticAICompanion.Runtime
             runtimeOptions = runtimeOptions ?? RuntimeInvocationOptions.Default;
             var json = await RunPlanningTurnAsync(request.ContextSnapshot, BuildFailurePrompt(request, failedProposal, failurePacket), runtimeOptions, cancellationToken);
             var payload = JsonSerializer.Deserialize<ClaudePlanningPayload>(json, _jsonOptions) ?? throw new InvalidOperationException("Claude returned an empty failure-analysis payload.");
+            payload = await EnsureGeneratedSourceAsync(request, payload, runtimeOptions, cancellationToken);
             return BuildProposalCandidate(request.Prompt, payload, failedProposal?.Provenance?.RepairCount ?? 0);
+        }
+
+        private async Task<ClaudePlanningPayload> EnsureGeneratedSourceAsync(PlanningRequest request, ClaudePlanningPayload payload, RuntimeInvocationOptions runtimeOptions, CancellationToken cancellationToken)
+        {
+            if (payload == null || !RequiresGeneratedCode(payload) || !string.IsNullOrWhiteSpace(payload.GeneratedSource))
+            {
+                return payload;
+            }
+
+            var repairJson = await RunPlanningTurnAsync(request.ContextSnapshot, BuildMissingSourcePrompt(request, payload), runtimeOptions, cancellationToken);
+            var repaired = JsonSerializer.Deserialize<ClaudePlanningPayload>(repairJson, _jsonOptions);
+            if (repaired == null || !RequiresGeneratedCode(repaired) || !string.IsNullOrWhiteSpace(repaired.GeneratedSource))
+            {
+                return repaired;
+            }
+
+            return CreateMissingSourceReply(request, repaired);
         }
 
         private async Task<string> RunPlanningTurnAsync(RevitContextSnapshot snapshot, string prompt, RuntimeInvocationOptions runtimeOptions, CancellationToken cancellationToken)
@@ -199,8 +219,25 @@ namespace RevitAgenticAICompanion.Runtime
             var s = request.ContextSnapshot;
             var b = new StringBuilder();
             b.AppendLine("You are the planning runtime for a Revit add-in. Return JSON only and obey the provided output schema.");
-            b.AppendLine("Use responseKind reply_only, inspection_probe, read_only_query, or action_proposal. The host owns Revit transactions.");
-            b.AppendLine("Do not create Transaction or TransactionGroup objects. Use elementId.Value, not IntegerValue. Always populate every schema field.");
+            b.AppendLine("Accept any user prompt. Do not reject prompts just because they are not Revit write tasks.");
+            b.AppendLine("Use responseKind reply_only, inspection_probe, read_only_query, or action_proposal.");
+            b.AppendLine("Host contract:");
+            b.AppendLine("- reply_only means no code will run. Use it for conversation, clarification, or final text answers that do not need live model execution.");
+            b.AppendLine("- inspection_probe means the host will compile and immediately execute generatedSource as read-only C# to gather evidence, then call you again with that evidence.");
+            b.AppendLine("- read_only_query means the host will compile and execute generatedSource once as read-only C# and show the returned summary.");
+            b.AppendLine("- action_proposal means the host will compile generatedSource, preview it, then wait for user approval before Execute.");
+            b.AppendLine("- For inspection_probe, read_only_query, and action_proposal, generatedSource MUST be complete compilable C# source. Do not ask the user to confirm a probe if you can provide the source.");
+            b.AppendLine("- If you cannot provide source, choose reply_only and explain what is missing.");
+            b.AppendLine("Generated source contract:");
+            b.AppendLine("- Namespace: GeneratedActions. Class: public static class CompanionAction.");
+            b.AppendLine("- inspection_probe/read_only_query require public static GeneratedActionResult Execute(UIApplication uiapp).");
+            b.AppendLine("- action_proposal requires public static GeneratedActionResult Preview(UIApplication uiapp) and public static GeneratedActionResult Execute(UIApplication uiapp).");
+            b.AppendLine("- Include using System;, using Autodesk.Revit.DB;, using Autodesk.Revit.UI;, and using RevitAgenticAICompanion.Runtime;.");
+            b.AppendLine("- The host owns Revit transactions. Do not create Transaction or TransactionGroup objects.");
+            b.AppendLine("- Use elementId.Value, not IntegerValue. Do not call SchedulableField.GetFieldType().");
+            b.AppendLine("- Return new GeneratedActionResult(summary, elementIdsAsLongs).");
+            b.AppendLine("- Probe/query summaries must report concrete discovered names, parameter names, values, element ids, counts, or field names. Do not speculate.");
+            b.AppendLine("- Always populate every schema field.");
             b.AppendLine("Prompt:"); b.AppendLine(request.Prompt ?? string.Empty);
             b.AppendLine("DocumentTitle: " + s.DocumentTitle); b.AppendLine("DocumentPath: " + s.DocumentPath); b.AppendLine("ActiveView: " + s.ActiveViewName);
             b.AppendLine("SelectedElementIds: " + string.Join(", ", s.SelectedElementIds)); b.AppendLine("SelectedCategories: " + string.Join(", ", s.SelectedCategoryNames));
@@ -209,6 +246,28 @@ namespace RevitAgenticAICompanion.Runtime
             if (request.UserPreferences == null || request.UserPreferences.Count == 0) b.AppendLine("- none"); else foreach (var p in request.UserPreferences.Take(20)) b.AppendLine("- [" + p.ConfidenceLevel + "] " + p.Key + " = " + p.Value);
             b.AppendLine("Retrieved evidence:");
             if (request.RetrievedEvidence == null || request.RetrievedEvidence.Count == 0) b.AppendLine("- none yet"); else foreach (var e in request.RetrievedEvidence) b.AppendLine("- Probe " + e.ProbeOrdinal + ": " + e.Summary);
+            return b.ToString();
+        }
+
+        private static string BuildMissingSourcePrompt(PlanningRequest request, ClaudePlanningPayload payload)
+        {
+            var b = new StringBuilder(BuildPlanningPrompt(request));
+            b.AppendLine();
+            b.AppendLine("Your previous structured response selected an executable responseKind but omitted generatedSource.");
+            b.AppendLine("Repair only that host-contract violation.");
+            b.AppendLine("Required behavior:");
+            b.AppendLine("- Keep responseKind as " + (payload?.ResponseKind ?? string.Empty) + " unless you genuinely cannot write Revit C# source.");
+            b.AppendLine("- If keeping inspection_probe, read_only_query, or action_proposal, generatedSource must contain complete compilable C# for GeneratedActions.CompanionAction.");
+            b.AppendLine("- Do not ask the user to confirm the inspection. The host will run read-only probes automatically.");
+            b.AppendLine("- If you cannot write the source, return reply_only with a concise explanation.");
+            b.AppendLine("Previous messageText:");
+            b.AppendLine(payload?.MessageText ?? string.Empty);
+            b.AppendLine("Previous actionSummary:");
+            b.AppendLine(payload?.ActionSummary ?? string.Empty);
+            b.AppendLine("Previous probePurpose:");
+            b.AppendLine(payload?.ProbePurpose ?? string.Empty);
+            b.AppendLine("Previous probeQuestion:");
+            b.AppendLine(payload?.ProbeQuestion ?? string.Empty);
             return b.ToString();
         }
 
@@ -242,6 +301,29 @@ namespace RevitAgenticAICompanion.Runtime
         private static bool LooksLikeSessionReuseFailure(string text) { return !string.IsNullOrWhiteSpace(text) && text.IndexOf("session id", StringComparison.OrdinalIgnoreCase) >= 0 && (text.IndexOf("already in use", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("not found", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("invalid", StringComparison.OrdinalIgnoreCase) >= 0); }
         private static string FirstNonEmpty(params string[] values) { return values == null ? string.Empty : values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty; }
         private static string SummarizeText(string text) { if (string.IsNullOrWhiteSpace(text)) return string.Empty; var line = text.Replace("\r", " ").Replace("\n", " ").Trim(); return line.Length <= 400 ? line : line.Substring(0, 400) + "..."; }
+
+        private static ClaudePlanningPayload CreateMissingSourceReply(PlanningRequest request, ClaudePlanningPayload payload)
+        {
+            return new ClaudePlanningPayload
+            {
+                ResponseKind = "reply_only",
+                MessageText = FirstNonEmpty(
+                    payload?.MessageText,
+                    "Claude requested a Revit execution step but did not return compilable C# source, so the host stopped before running anything. Try the prompt again or ask for a narrower read-only query."),
+                ActionSummary = string.Empty,
+                TransactionName = string.Empty,
+                GeneratedSource = string.Empty,
+                IsUndoHostile = false,
+                CapabilityBand = "reply",
+                RiskLevel = "low",
+                ScopeSummary = "Stopped before execution because the runtime omitted generated source.",
+                ConfidenceLevel = "low",
+                EvidenceSummary = string.Empty,
+                ProbePurpose = string.Empty,
+                ProbeQuestion = string.Empty,
+                Assumptions = payload?.Assumptions ?? Array.Empty<string>()
+            };
+        }
 
         private sealed class ClaudePlanningTurnExtraction
         {

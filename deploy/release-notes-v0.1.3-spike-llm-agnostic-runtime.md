@@ -11,6 +11,7 @@ This is a spike build for the LLM-agnostic runtime path. It is intended for loca
 - Added Claude Desktop/Windows app detection as diagnostics only.
 - Improved Claude missing-runtime messages so Desktop-only installs are not confused with a working CLI runtime.
 - Fixed Claude follow-up turns by using `--resume <session_id>` instead of reusing `--session-id`.
+- Tightened Claude's Revit source contract and added a one-turn repair when Claude asks for a probe/query/action but omits generated C# source.
 - Added provider-neutral runtime labels in the Revit pane.
 - Version stamp: `0.1.3-spike-llm-agnostic-runtime+20260729`.
 
