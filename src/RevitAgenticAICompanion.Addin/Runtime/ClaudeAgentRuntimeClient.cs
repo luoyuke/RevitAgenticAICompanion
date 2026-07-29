@@ -98,47 +98,69 @@ namespace RevitAgenticAICompanion.Runtime
             if (health == null || !health.IsAvailable || !health.IsAuthenticated) throw CreateRuntimeException("preflight", status.Detail, health, runtimeSummary: runtimeOptions.CreateSummary(status.Detail));
             var projectKey = ProjectKeyBuilder.FromSnapshot(snapshot);
             var sessionId = _threadStore.GetThreadId(AgentRuntimeProvider.Claude, projectKey);
-            if (string.IsNullOrWhiteSpace(sessionId))
+            var result = await RunClaudePlanningProcessAsync(health.ExecutablePath, sessionId, prompt, runtimeOptions, cancellationToken);
+            if (result.ExitCode != 0 && !string.IsNullOrWhiteSpace(sessionId) && LooksLikeSessionReuseFailure(result.StandardError))
             {
-                sessionId = Guid.NewGuid().ToString();
-                _threadStore.SetThreadId(AgentRuntimeProvider.Claude, projectKey, sessionId);
+                // Claude Code treats --session-id as creation, not continuation. If a stored
+                // session is stale or busy, discard it and let Claude create a fresh one.
+                _threadStore.ClearThreadId(AgentRuntimeProvider.Claude, projectKey);
+                result = await RunClaudePlanningProcessAsync(health.ExecutablePath, string.Empty, prompt, runtimeOptions, cancellationToken);
             }
-            var args = new List<string> { "-p", "--output-format", "json", "--json-schema", BuildOutputSchema().ToJsonString(_jsonOptions), "--tools", string.Empty, "--disallowedTools", "mcp__*", "--permission-mode", "plan", "--session-id", sessionId };
+
+            if (result.ExitCode != 0) throw CreateRuntimeException("planning-exec", "Claude CLI failed during planning.", health, result.Arguments, result.ExitCode, result.StandardOutput, result.StandardError, runtimeOptions.CreateSummary(status.Detail));
+            var extraction = ExtractClaudePlanningTurn(result.StandardOutput);
+            if (!string.IsNullOrWhiteSpace(extraction.SessionId))
+            {
+                _threadStore.SetThreadId(AgentRuntimeProvider.Claude, projectKey, extraction.SessionId);
+            }
+
+            if (!string.IsNullOrWhiteSpace(extraction.StructuredPayload)) return extraction.StructuredPayload;
+            throw CreateRuntimeException("planning-parse", "Claude completed without returning a structured payload.", health, result.Arguments, result.ExitCode, result.StandardOutput, result.StandardError, runtimeOptions.CreateSummary(status.Detail));
+        }
+
+        private async Task<CliProcessResult> RunClaudePlanningProcessAsync(string executablePath, string sessionId, string prompt, RuntimeInvocationOptions runtimeOptions, CancellationToken cancellationToken)
+        {
+            var args = new List<string> { "-p", "--output-format", "json", "--json-schema", BuildOutputSchema().ToJsonString(_jsonOptions), "--tools", string.Empty, "--disallowedTools", "mcp__*", "--permission-mode", "plan" };
+            if (!string.IsNullOrWhiteSpace(sessionId))
+            {
+                args.Add("--resume");
+                args.Add(sessionId);
+            }
+
             if (!runtimeOptions.UsesProviderDefaultReasoning)
             {
                 args.Add("--effort");
                 args.Add(runtimeOptions.RequestedReasoningEffort);
             }
-            var result = await CliProcessRunner.RunAsync(health.ExecutablePath, args, prompt ?? string.Empty, ExecTimeout, _paths.RootPath, cancellationToken);
-            if (result.ExitCode != 0) throw CreateRuntimeException("planning-exec", "Claude CLI failed during planning.", health, result.Arguments, result.ExitCode, result.StandardOutput, result.StandardError, runtimeOptions.CreateSummary(status.Detail));
-            var structured = ExtractStructuredPayload(result.StandardOutput);
-            if (!string.IsNullOrWhiteSpace(structured)) return structured;
-            throw CreateRuntimeException("planning-parse", "Claude completed without returning a structured payload.", health, result.Arguments, result.ExitCode, result.StandardOutput, result.StandardError, runtimeOptions.CreateSummary(status.Detail));
+
+            return await CliProcessRunner.RunAsync(executablePath, args, prompt ?? string.Empty, ExecTimeout, _paths.RootPath, cancellationToken);
         }
 
-        private static string ExtractStructuredPayload(string stdout)
+        private static ClaudePlanningTurnExtraction ExtractClaudePlanningTurn(string stdout)
         {
-            if (string.IsNullOrWhiteSpace(stdout)) return string.Empty;
+            if (string.IsNullOrWhiteSpace(stdout)) return new ClaudePlanningTurnExtraction(string.Empty, string.Empty);
             try
             {
                 using (var doc = JsonDocument.Parse(stdout))
                 {
                     var root = doc.RootElement;
+                    var sessionId = TryGetStringProperty(root, "session_id", "sessionId");
                     var direct = TryExtractPayloadElement(root);
-                    if (!string.IsNullOrWhiteSpace(direct)) return direct;
+                    if (!string.IsNullOrWhiteSpace(direct)) return new ClaudePlanningTurnExtraction(direct, sessionId);
                     if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("result", out var result))
                     {
                         if (result.ValueKind == JsonValueKind.String)
                         {
                             var text = result.GetString() ?? string.Empty;
-                            if (LooksLikeJson(text)) return text.Trim();
+                            if (LooksLikeJson(text)) return new ClaudePlanningTurnExtraction(text.Trim(), sessionId);
                         }
-                        return TryExtractPayloadElement(result);
+
+                        return new ClaudePlanningTurnExtraction(TryExtractPayloadElement(result), sessionId);
                     }
                 }
             }
             catch { }
-            return string.Empty;
+            return new ClaudePlanningTurnExtraction(string.Empty, string.Empty);
         }
 
         private static string TryExtractPayloadElement(JsonElement element)
@@ -147,6 +169,20 @@ namespace RevitAgenticAICompanion.Runtime
             if (element.TryGetProperty("structured_output", out var structured)) return structured.GetRawText();
             if (element.TryGetProperty("structuredOutput", out var camel)) return camel.GetRawText();
             return element.TryGetProperty("responseKind", out _) ? element.GetRawText() : string.Empty;
+        }
+
+        private static string TryGetStringProperty(JsonElement element, params string[] names)
+        {
+            if (element.ValueKind != JsonValueKind.Object) return string.Empty;
+            foreach (var name in names)
+            {
+                if (element.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String)
+                {
+                    return property.GetString() ?? string.Empty;
+                }
+            }
+
+            return string.Empty;
         }
 
         private static AgentRuntimeException CreateRuntimeException(string stage, string message, AgentRuntimeHealthReport health, string command = null, int? exitCode = null, string stdout = null, string stderr = null, RuntimeInvocationSummary runtimeSummary = null)
@@ -203,8 +239,21 @@ namespace RevitAgenticAICompanion.Runtime
 
         private static bool RequiresGeneratedCode(ClaudePlanningPayload p) { return p != null && !string.Equals(p.ResponseKind, "reply_only", StringComparison.OrdinalIgnoreCase); }
         private static bool LooksLikeJson(string text) { return !string.IsNullOrWhiteSpace(text) && text.TrimStart().StartsWith("{", StringComparison.Ordinal); }
+        private static bool LooksLikeSessionReuseFailure(string text) { return !string.IsNullOrWhiteSpace(text) && text.IndexOf("session id", StringComparison.OrdinalIgnoreCase) >= 0 && (text.IndexOf("already in use", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("not found", StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf("invalid", StringComparison.OrdinalIgnoreCase) >= 0); }
         private static string FirstNonEmpty(params string[] values) { return values == null ? string.Empty : values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty; }
         private static string SummarizeText(string text) { if (string.IsNullOrWhiteSpace(text)) return string.Empty; var line = text.Replace("\r", " ").Replace("\n", " ").Trim(); return line.Length <= 400 ? line : line.Substring(0, 400) + "..."; }
+
+        private sealed class ClaudePlanningTurnExtraction
+        {
+            public ClaudePlanningTurnExtraction(string structuredPayload, string sessionId)
+            {
+                StructuredPayload = structuredPayload ?? string.Empty;
+                SessionId = sessionId ?? string.Empty;
+            }
+
+            public string StructuredPayload { get; }
+            public string SessionId { get; }
+        }
 
         private sealed class ClaudePlanningPayload
         {
