@@ -42,11 +42,12 @@ The runtime status shown in the add-in and artifacts records the selected execut
 The dockable pane includes compact provider and runtime selectors:
 
 - `Provider default`: inherit the selected provider's config/defaults where possible.
-- `Fast`: use the configured/default model with low reasoning.
-- `Balanced`: use the configured/default model with medium reasoning.
-- `Deep`: use the configured/default model with high reasoning.
+- `Fast`: low reasoning. Codex keeps the provider default model; Claude uses `--model sonnet`.
+- `Balanced`: medium reasoning. Codex keeps the provider default model; Claude uses `--model sonnet`.
+- `Deep`: high reasoning. Codex keeps the provider default model; Claude uses `--model opus`.
+- `Experimental`: high reasoning. Codex keeps the provider default model; Claude uses `--model fable` when available.
 
-The add-in currently does not expose raw model IDs in the UI and does not mutate provider-owned global config files. To change default models, use the provider's own config or app settings. Runtime profiles only apply overrides supported by the active provider binary.
+The add-in currently does not expose raw model IDs in the main UI and does not mutate provider-owned global config files. Claude model values are CLI aliases, not pinned model IDs. If an alias is unavailable for the user's Claude account, organization, or CLI version, the provider error is surfaced instead of silently falling back.
 
 ## What It Can Do
 

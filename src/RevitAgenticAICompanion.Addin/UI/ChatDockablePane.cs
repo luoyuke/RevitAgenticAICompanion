@@ -82,7 +82,7 @@ namespace RevitAgenticAICompanion.UI
 
             _runtimeProfileComboBox = new ComboBox
             {
-                Width = 130,
+                Width = 150,
                 Margin = new Thickness(0, 0, 18, 0),
                 FontFamily = CreateUiFontFamily(),
             };
@@ -90,6 +90,7 @@ namespace RevitAgenticAICompanion.UI
             AddRuntimeProfileItem("Fast", RuntimeProfile.Fast, null);
             AddRuntimeProfileItem("Balanced", RuntimeProfile.Balanced, null);
             AddRuntimeProfileItem("Deep", RuntimeProfile.Deep, "May be slower and use more quota.");
+            AddRuntimeProfileItem("Experimental", RuntimeProfile.Experimental, "Uses the strongest experimental provider profile when available; may be slower and use more quota.");
             _runtimeProfileComboBox.SelectedIndex = 2;
             runtimeToolbar.Children.Add(_runtimeProfileComboBox);
 

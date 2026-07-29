@@ -115,7 +115,7 @@ namespace RevitAgenticAICompanion.Runtime
         {
             var status = await GetStatusAsync(cancellationToken);
             var health = status.RuntimeHealth;
-            if (health == null || !health.IsAvailable || !health.IsAuthenticated) throw CreateRuntimeException("preflight", status.Detail, health, runtimeSummary: runtimeOptions.CreateSummary(status.Detail));
+            if (health == null || !health.IsAvailable || !health.IsAuthenticated) throw CreateRuntimeException("preflight", status.Detail, health, runtimeSummary: runtimeOptions.CreateSummary(AgentRuntimeProvider.Claude, status.Detail));
             var projectKey = ProjectKeyBuilder.FromSnapshot(snapshot);
             var sessionId = _threadStore.GetThreadId(AgentRuntimeProvider.Claude, projectKey);
             var result = await RunClaudePlanningProcessAsync(health.ExecutablePath, sessionId, prompt, runtimeOptions, cancellationToken);
@@ -127,7 +127,7 @@ namespace RevitAgenticAICompanion.Runtime
                 result = await RunClaudePlanningProcessAsync(health.ExecutablePath, string.Empty, prompt, runtimeOptions, cancellationToken);
             }
 
-            if (result.ExitCode != 0) throw CreateRuntimeException("planning-exec", "Claude CLI failed during planning.", health, result.Arguments, result.ExitCode, result.StandardOutput, result.StandardError, runtimeOptions.CreateSummary(status.Detail));
+            if (result.ExitCode != 0) throw CreateRuntimeException("planning-exec", "Claude CLI failed during planning.", health, result.Arguments, result.ExitCode, result.StandardOutput, result.StandardError, runtimeOptions.CreateSummary(AgentRuntimeProvider.Claude, status.Detail));
             var extraction = ExtractClaudePlanningTurn(result.StandardOutput);
             if (!string.IsNullOrWhiteSpace(extraction.SessionId))
             {
@@ -135,12 +135,19 @@ namespace RevitAgenticAICompanion.Runtime
             }
 
             if (!string.IsNullOrWhiteSpace(extraction.StructuredPayload)) return extraction.StructuredPayload;
-            throw CreateRuntimeException("planning-parse", "Claude completed without returning a structured payload.", health, result.Arguments, result.ExitCode, result.StandardOutput, result.StandardError, runtimeOptions.CreateSummary(status.Detail));
+            throw CreateRuntimeException("planning-parse", "Claude completed without returning a structured payload.", health, result.Arguments, result.ExitCode, result.StandardOutput, result.StandardError, runtimeOptions.CreateSummary(AgentRuntimeProvider.Claude, status.Detail));
         }
 
         private async Task<CliProcessResult> RunClaudePlanningProcessAsync(string executablePath, string sessionId, string prompt, RuntimeInvocationOptions runtimeOptions, CancellationToken cancellationToken)
         {
             var args = new List<string> { "-p", "--output-format", "json", "--json-schema", BuildOutputSchema().ToJsonString(_jsonOptions), "--tools", string.Empty, "--disallowedTools", "mcp__*", "--permission-mode", "plan" };
+            var requestedModel = runtimeOptions.RequestedModelForProvider(AgentRuntimeProvider.Claude);
+            if (!string.IsNullOrWhiteSpace(requestedModel))
+            {
+                args.Add("--model");
+                args.Add(requestedModel);
+            }
+
             if (!string.IsNullOrWhiteSpace(sessionId))
             {
                 args.Add("--resume");

@@ -18,11 +18,13 @@ namespace RevitAgenticAICompanion.Runtime
                 switch (Profile)
                 {
                     case RuntimeProfile.ProviderDefault:
-                        return "Codex default";
+                        return "Provider default";
                     case RuntimeProfile.Fast:
                         return "Fast";
                     case RuntimeProfile.Deep:
                         return "Deep";
+                    case RuntimeProfile.Experimental:
+                        return "Experimental";
                     case RuntimeProfile.Balanced:
                     default:
                         return "Balanced";
@@ -42,6 +44,8 @@ namespace RevitAgenticAICompanion.Runtime
                         return "medium";
                     case RuntimeProfile.Deep:
                         return "high";
+                    case RuntimeProfile.Experimental:
+                        return "high";
                     case RuntimeProfile.ProviderDefault:
                     default:
                         return string.Empty;
@@ -51,7 +55,7 @@ namespace RevitAgenticAICompanion.Runtime
 
         public bool UsesProviderDefaultModel
         {
-            get { return true; }
+            get { return UsesProviderDefaultModelForProvider(AgentRuntimeProvider.Codex); }
         }
 
         public bool UsesProviderDefaultReasoning
@@ -61,20 +65,86 @@ namespace RevitAgenticAICompanion.Runtime
 
         public RuntimeInvocationSummary CreateSummary(string runtimeStatusSummary, string fallbackReason = null)
         {
+            return CreateSummary(AgentRuntimeProvider.Codex, runtimeStatusSummary, fallbackReason);
+        }
+
+        public RuntimeInvocationSummary CreateSummary(AgentRuntimeProvider provider, string runtimeStatusSummary, string fallbackReason = null)
+        {
             var effectiveFallbackReason = fallbackReason ??
-                (Profile == RuntimeProfile.ProviderDefault
+                (UsesProviderDefaultModelForProvider(provider) && UsesProviderDefaultReasoning
                     ? string.Empty
-                    : "Model override omitted; using Codex default/configured model.");
+                    : BuildFallbackReason(provider));
 
             return new RuntimeInvocationSummary(
                 DisplayName,
-                string.Empty,
+                RequestedModelForProvider(provider),
                 RequestedReasoningEffort,
-                UsesProviderDefaultModel,
+                UsesProviderDefaultModelForProvider(provider),
                 UsesProviderDefaultReasoning,
-                UsesProviderDefaultReasoning ? "Codex default config" : "Reasoning override only",
+                BuildCommandOverrideStrategy(provider),
                 runtimeStatusSummary,
                 effectiveFallbackReason);
+        }
+
+        public string RequestedModelForProvider(AgentRuntimeProvider provider)
+        {
+            if (provider != AgentRuntimeProvider.Claude)
+            {
+                return string.Empty;
+            }
+
+            switch (Profile)
+            {
+                case RuntimeProfile.Fast:
+                case RuntimeProfile.Balanced:
+                    return "sonnet";
+                case RuntimeProfile.Deep:
+                    return "opus";
+                case RuntimeProfile.Experimental:
+                    return "fable";
+                case RuntimeProfile.ProviderDefault:
+                default:
+                    return string.Empty;
+            }
+        }
+
+        public bool UsesProviderDefaultModelForProvider(AgentRuntimeProvider provider)
+        {
+            return string.IsNullOrWhiteSpace(RequestedModelForProvider(provider));
+        }
+
+        private string BuildCommandOverrideStrategy(AgentRuntimeProvider provider)
+        {
+            var usesDefaultModel = UsesProviderDefaultModelForProvider(provider);
+            if (usesDefaultModel && UsesProviderDefaultReasoning)
+            {
+                return provider == AgentRuntimeProvider.Claude
+                    ? "Claude provider default config"
+                    : "Codex default config";
+            }
+
+            if (!usesDefaultModel && !UsesProviderDefaultReasoning)
+            {
+                return "Model and reasoning override";
+            }
+
+            return usesDefaultModel ? "Reasoning override only" : "Model override only";
+        }
+
+        private string BuildFallbackReason(AgentRuntimeProvider provider)
+        {
+            var usesDefaultModel = UsesProviderDefaultModelForProvider(provider);
+            if (!usesDefaultModel && UsesProviderDefaultReasoning)
+            {
+                return "Reasoning override omitted; using provider default/configured reasoning.";
+            }
+
+            if (usesDefaultModel && !UsesProviderDefaultReasoning)
+            {
+                return "Model override omitted; using provider default/configured model.";
+            }
+
+            return string.Empty;
         }
     }
 }

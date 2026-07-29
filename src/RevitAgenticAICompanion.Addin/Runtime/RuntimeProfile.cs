@@ -6,5 +6,6 @@ namespace RevitAgenticAICompanion.Runtime
         Fast,
         Balanced,
         Deep,
+        Experimental,
     }
 }

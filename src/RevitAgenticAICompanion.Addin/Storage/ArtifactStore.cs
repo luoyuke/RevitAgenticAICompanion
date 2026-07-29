@@ -161,11 +161,11 @@ namespace RevitAgenticAICompanion.Storage
             builder.AppendLine("Runtime Profile:");
             builder.AppendLine(runtimeInvocation.SelectedProfile);
             builder.AppendLine("Requested Model:");
-            builder.AppendLine(string.IsNullOrWhiteSpace(runtimeInvocation.RequestedModel) ? "(Codex default)" : runtimeInvocation.RequestedModel);
+            builder.AppendLine(string.IsNullOrWhiteSpace(runtimeInvocation.RequestedModel) ? "(provider default)" : runtimeInvocation.RequestedModel);
             builder.AppendLine("Requested Reasoning Effort:");
-            builder.AppendLine(string.IsNullOrWhiteSpace(runtimeInvocation.RequestedReasoningEffort) ? "(Codex default)" : runtimeInvocation.RequestedReasoningEffort);
-            builder.AppendLine("Used Codex Default Model: " + runtimeInvocation.UsedCodexDefaultModel);
-            builder.AppendLine("Used Codex Default Reasoning: " + runtimeInvocation.UsedCodexDefaultReasoning);
+            builder.AppendLine(string.IsNullOrWhiteSpace(runtimeInvocation.RequestedReasoningEffort) ? "(provider default)" : runtimeInvocation.RequestedReasoningEffort);
+            builder.AppendLine("Used Provider Default Model: " + runtimeInvocation.UsedCodexDefaultModel);
+            builder.AppendLine("Used Provider Default Reasoning: " + runtimeInvocation.UsedCodexDefaultReasoning);
             builder.AppendLine("Command Override Strategy:");
             builder.AppendLine(runtimeInvocation.CommandOverrideStrategy);
             builder.AppendLine("Runtime Status Summary:");

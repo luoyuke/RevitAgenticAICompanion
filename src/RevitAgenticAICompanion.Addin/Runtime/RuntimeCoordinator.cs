@@ -96,7 +96,7 @@ namespace RevitAgenticAICompanion.Runtime
 
             runtimeOptions = runtimeOptions ?? RuntimeInvocationOptions.Default;
             var runtimeStatus = await _agentRuntimeClient.GetStatusAsync(cancellationToken);
-            var runtimeSummary = runtimeOptions.CreateSummary(runtimeStatus.Detail);
+            var runtimeSummary = runtimeOptions.CreateSummary(RuntimeProvider, runtimeStatus.Detail);
             var snapshot = await _dispatcher.Enqueue(new CaptureContextSnapshotRequest(_documentStateTracker));
             var memorySession = TryHandleMemoryCommand(prompt, snapshot, runtimeOptions, runtimeSummary);
             if (memorySession != null)

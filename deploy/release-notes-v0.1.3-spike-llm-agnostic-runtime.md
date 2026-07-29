@@ -13,6 +13,8 @@ This is a spike build for the LLM-agnostic runtime path. It is intended for loca
 - Fixed Claude follow-up turns by using `--resume <session_id>` instead of reusing `--session-id`.
 - Tightened Claude's Revit source contract and added a one-turn repair when Claude asks for a probe/query/action but omits generated C# source.
 - Added provider-neutral runtime labels in the Revit pane.
+- Added an `Experimental` runtime profile.
+- Added Claude-only model mapping: `Fast`/`Balanced` use `sonnet`, `Deep` uses `opus`, `Experimental` uses `fable`, and `Provider default` passes no `--model`.
 - Version stamp: `0.1.3-spike-llm-agnostic-runtime+20260729`.
 
 ## Claude Notes

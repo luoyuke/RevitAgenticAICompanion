@@ -62,7 +62,8 @@ The Revit pane has a provider selector and runtime profile selector.
 - Provider `Codex` uses the local Codex runtime.
 - Provider `Claude` uses the local Claude CLI/runtime.
 - Runtime profile `Provider default` avoids model/reasoning overrides where possible.
-- Runtime profiles `Fast`, `Balanced`, and `Deep` apply host-owned effort settings for the next planning run.
+- Codex profiles apply host-owned reasoning effort only; the model stays provider default/configured.
+- Claude profiles map to CLI model aliases: `Fast`/`Balanced` -> `sonnet`, `Deep` -> `opus`, `Experimental` -> `fable`.
 
 Natural-language prompts do not change the selected provider or runtime profile. Change those in the UI before pressing Plan.
 
