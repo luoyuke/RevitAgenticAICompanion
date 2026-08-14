@@ -2,7 +2,7 @@
 
 Revit Agentic AI Companion is an experimental Revit 2026 add-in that puts an AI planning pane inside Revit. It can inspect the live model, ask for more evidence, generate C# against the Revit API, preview bounded edits, and execute approved changes through host-owned Revit transactions.
 
-Current spike version: `0.1.3-spike-llm-agnostic-runtime+20260729`.
+Current version: `0.2.0+20260814`.
 
 It is past pure proof-of-concept and can already do useful BIM work, but it is still a research/demo project. Expect failures, inspect the artifacts, and test on disposable copies before trusting it near serious production models.
 
@@ -17,7 +17,7 @@ The add-in does not ship model access or credentials. It uses the local runtime 
 
 ## Runtime Providers
 
-This spike adds a provider selector:
+The add-in includes a provider selector:
 
 - `Codex`: uses the local Codex runtime.
 - `Claude`: uses Claude Code CLI through the `claude` command.
@@ -57,14 +57,14 @@ The add-in currently does not expose raw model IDs in the main UI and does not m
 - Generate and compile C# against Revit 2026 references.
 - Preview bounded edits before approval.
 - Execute approved writes inside host-owned Revit transactions.
-- Capture compact failure packets and ask Codex for failure analysis or repair proposals.
+- Capture compact failure packets and ask the selected provider for failure analysis or repair proposals.
 - Persist artifacts and audit rows for every run.
 
 Recent test runs have successfully created ductwork-only 3D isometric views, generated ductwork BOQ schedules, and created low-density duct tags in locked 3D views. These are demonstrations, not guarantees.
 
 ## Current Design
 
-The host owns Revit access and execution. Codex owns planning.
+The host owns Revit access and execution. The selected AI runtime owns planning.
 
 Host responsibilities:
 
@@ -74,7 +74,7 @@ Host responsibilities:
 - Enforce approval and confirmation gates.
 - Persist artifacts, audit rows, runtime diagnostics, and user memory.
 
-Codex responsibilities:
+AI runtime responsibilities:
 
 - Interpret the user prompt.
 - Decide between reply, read-only query, inspection probe, or action proposal.
@@ -85,7 +85,7 @@ Codex responsibilities:
 
 The current memory model is intentionally tiny:
 
-- Codex thread continuity for short conversational context.
+- Provider-specific thread continuity for short conversational context.
 - `memory.md` for cross-project user preferences only.
 - `audit.db` as a ledger, not retrieval memory.
 
@@ -178,7 +178,8 @@ The uninstaller removes the Revit manifest and installed payload. State files un
 
 - This is a demo/research add-in, not production BIM automation software.
 - The add-in currently inherits the configured Codex model unless a future model-selection UI is added.
-- Claude provider support is a spike. It requires Claude Code CLI; Claude Desktop detection is diagnostic-only.
+- Claude provider support requires Claude Code CLI; Claude Desktop detection is diagnostic-only.
+- Changing providers invalidates any pending unexecuted proposal, so the user must plan again with the newly selected provider.
 - Some timing comparisons are approximate because artifacts do not yet isolate pure `codex exec` duration.
 - Hopping between unsaved documents can still leak conversational context if Revit documents share the same title, because thread continuity falls back to document title when no file path exists.
 - User-facing artifact text can still show occasional encoding artifacts in some output paths.

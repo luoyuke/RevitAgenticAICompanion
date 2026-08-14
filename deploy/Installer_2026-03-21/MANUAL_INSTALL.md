@@ -2,9 +2,9 @@ Revit Agentic AI Companion Installer
 ===================================
 
 This folder contains a packaged installer for the Revit 2026 demo add-in.
-This spike build adds a host-side runtime provider selector so the pane can run against Codex or Claude, depending on what is installed and signed in for the current Windows user.
+This build includes a host-side runtime provider selector so the pane can run against Codex or Claude, depending on what is installed and signed in for the current Windows user.
 
-Spike version: 0.1.3-spike-llm-agnostic-runtime+20260729
+Version: 0.2.0+20260814
 
 Prerequisites
 -------------
@@ -66,6 +66,7 @@ The Revit pane has a provider selector and runtime profile selector.
 - Claude profiles map to CLI model aliases: `Fast`/`Balanced` -> `sonnet`, `Deep` -> `opus`, `Experimental` -> `fable`.
 
 Natural-language prompts do not change the selected provider or runtime profile. Change those in the UI before pressing Plan.
+Changing providers invalidates a pending unexecuted proposal; press Plan again under the newly selected provider.
 
 Claude Desktop / Windows App
 ----------------------------

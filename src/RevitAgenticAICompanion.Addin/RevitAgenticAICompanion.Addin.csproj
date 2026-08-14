@@ -17,6 +17,8 @@
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|x64'">
     <OutputPath>bin\Release\</OutputPath>
+    <RepositoryRoot>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..'))</RepositoryRoot>
+    <PathMap>$(RepositoryRoot)=/_/RevitAgenticAICompanion</PathMap>
   </PropertyGroup>
 
   <ItemGroup>
