@@ -415,7 +415,16 @@ namespace RevitAgenticAICompanion.UI
                 return;
             }
 
-            _runtimeCoordinator.SetRuntimeProvider(provider);
+            var invalidatedPendingProposal = _runtimeCoordinator.SetRuntimeProvider(provider);
+            if (invalidatedPendingProposal)
+            {
+                _summaryTextBox.Text = "Pending proposal discarded because the runtime provider changed. Plan again with the selected provider.";
+                _sourceTextBox.Clear();
+                _approveButton.IsEnabled = false;
+                _confirmButton.IsEnabled = false;
+                AppendLog("Pending proposal discarded after runtime provider change. Plan again before approval.");
+            }
+
             AppendLog("Runtime provider selected: " + provider);
             await RefreshRuntimeStatusAsync(logToPane: true);
         }
@@ -466,6 +475,8 @@ namespace RevitAgenticAICompanion.UI
                 return;
             }
 
+            _runtimeProviderComboBox.IsEnabled = !isBusy;
+            _runtimeProfileComboBox.IsEnabled = !isBusy;
             _planButton.IsEnabled = !isBusy
                 && _currentRuntimeStatus != null
                 && _currentRuntimeStatus.CanPlan;

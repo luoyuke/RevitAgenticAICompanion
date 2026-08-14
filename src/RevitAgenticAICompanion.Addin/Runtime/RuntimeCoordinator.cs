@@ -65,13 +65,30 @@ namespace RevitAgenticAICompanion.Runtime
             }
         }
 
-        public void SetRuntimeProvider(AgentRuntimeProvider provider)
+        public bool SetRuntimeProvider(AgentRuntimeProvider provider)
         {
             if (_agentRuntimeClient is RuntimeClientRouter router)
             {
+                if (router.SelectedProvider == provider)
+                {
+                    return false;
+                }
+
+                var invalidatedPendingProposal = CurrentSession != null
+                    && CurrentSession.Proposal.RequiresApproval
+                    && CurrentSession.ExecutionResult == null;
+
+                if (invalidatedPendingProposal)
+                {
+                    CurrentSession = null;
+                }
+
                 router.SelectedProvider = provider;
                 _runtimeProviderSettings?.SetProvider(provider);
+                return invalidatedPendingProposal;
             }
+
+            return false;
         }
 
         public Task<AgentRuntimeStatus> GetRuntimeStatusAsync(CancellationToken cancellationToken)
