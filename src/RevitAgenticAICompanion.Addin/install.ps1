@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$installer = Join-Path $PSScriptRoot "..\\..\\deploy\\Installer_2026-03-21\\install.ps1"
+$installer = Join-Path $PSScriptRoot "..\\..\\deploy\\installer\\install.ps1"
 $resolvedInstaller = [System.IO.Path]::GetFullPath($installer)
 
 if (-not (Test-Path $resolvedInstaller)) {

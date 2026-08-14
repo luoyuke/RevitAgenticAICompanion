@@ -123,7 +123,7 @@ src\RevitAgenticAICompanion.Addin\bin\Release\
 The packaged installer payload is copied from that build output into:
 
 ```text
-deploy\Installer_2026-03-21\payload\
+deploy\installer\payload\
 ```
 
 ## Install
@@ -131,18 +131,18 @@ deploy\Installer_2026-03-21\payload\
 Use the packaged installer snapshot:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\deploy\Installer_2026-03-21\install.ps1
+powershell -ExecutionPolicy Bypass -File .\deploy\installer\install.ps1
 ```
 
 Or use the command wrapper:
 
 ```cmd
-deploy\Installer_2026-03-21\install.cmd
+deploy\installer\install.cmd
 ```
 
 The installer:
 
-- Copies the payload into `%LOCALAPPDATA%\RevitAgenticAICompanion\install\UserMemoryMd_2026-03-21`.
+- Copies the payload into `%LOCALAPPDATA%\RevitAgenticAICompanion\install\current`.
 - Writes the Revit 2026 manifest into `%APPDATA%\Autodesk\Revit\Addins\2026`.
 - Seeds `memory.md` only if missing, unless `-ForceSeed` is used.
 - Seeds `project-threads.json` only if missing, unless `-ResetThreads` is used.
@@ -150,8 +150,8 @@ The installer:
 Useful flags:
 
 ```powershell
-.\deploy\Installer_2026-03-21\install.ps1 -ForceSeed
-.\deploy\Installer_2026-03-21\install.ps1 -ResetThreads
+.\deploy\installer\install.ps1 -ForceSeed
+.\deploy\installer\install.ps1 -ResetThreads
 ```
 
 Close and restart Revit after installing or updating the add-in.
@@ -161,7 +161,7 @@ Close and restart Revit after installing or updating the add-in.
 Use:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\deploy\Installer_2026-03-21\uninstall.ps1
+powershell -ExecutionPolicy Bypass -File .\deploy\installer\uninstall.ps1
 ```
 
 The uninstaller removes the Revit manifest and installed payload. State files under `%LOCALAPPDATA%\RevitAgenticAICompanion\state` are intentionally left untouched.
@@ -169,8 +169,8 @@ The uninstaller removes the Revit manifest and installed payload. State files un
 ## Repo Layout
 
 - `src/RevitAgenticAICompanion.Addin/`: Revit add-in source, runtime client, UI, storage, and request handlers.
-- `deploy/Installer_2026-03-21/`: packaged installer snapshot and release payload.
-- `deploy/`: older milestone snapshots and deploy history.
+- `deploy/installer/`: current installer source, scripts, seed files, and release payload.
+- `deploy/`: installer source, release packages, and release notes.
 - `docs/`: screenshots and lightweight notes.
 - `docs/test-runs/`: captured screenshots from test sessions.
 

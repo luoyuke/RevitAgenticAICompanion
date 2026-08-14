@@ -1,0 +1,6 @@
+# Generated .NET and Visual Studio output
+**/bin/
+**/obj/
+.vs/
+*.user
+*.suo
